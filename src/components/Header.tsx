@@ -2,6 +2,7 @@ import React from 'react';
 import { 
   Cpu, 
   Brain, 
+  Globe,
   RotateCw, 
   Trash2, 
   Settings, 
@@ -56,7 +57,7 @@ export const Header: React.FC<HeaderProps> = ({
             backgroundColor: isOnline ? 'rgba(20, 83, 45, 0.2)' : 'rgba(127, 29, 29, 0.2)',
             color: isOnline ? '#4ade80' : '#f87171'
           }}
-          title={isOnline ? 'Ollama server connected' : 'Ollama server unreachable at configured endpoint'}
+          title={isOnline ? 'Local backend online' : 'Backend unreachable'}
         >
           {isOnline ? (
             <>
@@ -64,7 +65,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
               </span>
-              <span className="hidden sm:inline">OLLAMA LIVE</span>
+              <span className="hidden sm:inline">LIVE</span>
             </>
           ) : (
             <>
@@ -75,7 +76,7 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Middle: Model Selector */}
+      {/* Middle: Model Selector & Quick Switches */}
       <div className="flex items-center space-x-2">
         <div className="relative flex items-center bg-surface-200 border border-border rounded-md px-2.5 py-1 text-xs">
           <span className="text-zinc-500 mr-2 font-mono hidden md:inline">MODEL:</span>
@@ -130,6 +131,25 @@ export const Header: React.FC<HeaderProps> = ({
             {settings.enableThinking ? 'ON' : 'OFF'}
           </span>
         </button>
+
+        {/* Web Search Fast Switch */}
+        <button
+          onClick={() => onUpdateSettings({ enableWebSearch: !settings.enableWebSearch })}
+          className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-mono font-medium border transition-all ${
+            settings.enableWebSearch
+              ? 'bg-emerald-950/40 border-emerald-600/50 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.15)]'
+              : 'bg-surface-200 border-border text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+          }`}
+          title="Toggle Web Search (SearXNG)"
+        >
+          <Globe className={`w-3.5 h-3.5 ${settings.enableWebSearch ? 'text-emerald-400' : 'text-zinc-500'}`} />
+          <span className="hidden sm:inline">SEARCH</span>
+          <span className={`text-[10px] uppercase px-1 py-0.2 rounded ${
+            settings.enableWebSearch ? 'bg-emerald-500/20 text-emerald-300' : 'bg-zinc-800 text-zinc-500'
+          }`}>
+            {settings.enableWebSearch ? 'ON' : 'OFF'}
+          </span>
+        </button>
       </div>
 
       {/* Right Actions */}
@@ -153,4 +173,3 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
-

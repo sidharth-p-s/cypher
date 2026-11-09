@@ -1,9 +1,10 @@
 import React from 'react';
-import { Cpu, Terminal, ArrowRight, Brain, Zap, ShieldCheck } from 'lucide-react';
+import { Cpu, ArrowRight, Brain, Globe } from 'lucide-react';
 
 interface EmptyStateProps {
   modelName: string;
   enableThinking: boolean;
+  enableWebSearch?: boolean;
   onSelectPrompt: (prompt: string) => void;
   isOnline: boolean;
 }
@@ -11,10 +12,17 @@ interface EmptyStateProps {
 export const EmptyState: React.FC<EmptyStateProps> = ({
   modelName,
   enableThinking,
+  enableWebSearch,
   onSelectPrompt,
   isOnline,
 }) => {
   const suggestions = [
+    {
+      title: 'Real-time Web Search',
+      desc: 'Retrieve current events, latest documentation, or recent facts.',
+      prompt: 'What are the latest developments in AI and open-source models this week?',
+      badge: 'Live Search',
+    },
     {
       title: 'Deep Logical Reasoning',
       desc: 'Verify if a string of brackets is valid and explain time complexity.',
@@ -28,23 +36,17 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
       badge: 'Architecture',
     },
     {
-      title: 'First-Principles Physics',
+      title: 'First-Principles Science',
       desc: 'Explain quantum entanglement without using deceptive analogies.',
       prompt: 'Explain the mechanism and experimental proof of Bell inequality violations and quantum entanglement from first principles.',
       badge: 'Analysis',
-    },
-    {
-      title: 'Code Refactoring & Security',
-      desc: 'Review potential vulnerabilities in local LLM endpoints.',
-      prompt: 'What are the main security vectors when exposing local Ollama API instances over LAN or public reverse proxies? Give concrete mitigation configs.',
-      badge: 'Security',
     },
   ];
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 max-w-4xl mx-auto w-full text-center">
       {/* Central Icon */}
-      <div className="relative mb-5">
+      <div className="relative mb-5 flex items-center justify-center">
         <div className="w-14 h-14 rounded-2xl bg-surface-100 border border-border flex items-center justify-center text-zinc-100 shadow-2xl shadow-blue-950/20">
           <Cpu className="w-7 h-7 text-blue-400" />
         </div>
@@ -53,33 +55,44 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
             <Brain className="w-3.5 h-3.5 text-blue-400" />
           </div>
         )}
+        {enableWebSearch && (
+          <div className="absolute -bottom-1.5 -right-1.5 w-6 h-6 rounded-full bg-emerald-950 border border-emerald-500/60 flex items-center justify-center text-emerald-300">
+            <Globe className="w-3.5 h-3.5 text-emerald-400" />
+          </div>
+        )}
       </div>
 
       {/* Model Title */}
       <h2 className="text-xl font-semibold tracking-tight text-zinc-100 mb-1">
         Local Intelligence Console
       </h2>
-      <p className="text-sm text-zinc-400 max-w-md mb-6 font-mono">
-        Active Model: <span className="text-zinc-200 font-semibold">{modelName}</span>
+      <div className="flex flex-wrap items-center justify-center gap-2 mb-6 font-mono text-xs text-zinc-400">
+        <span>Active Model: <strong className="text-zinc-200">{modelName}</strong></span>
         {enableThinking && (
-          <span className="ml-2 text-xs px-2 py-0.5 rounded bg-blue-950/60 text-blue-400 border border-blue-800/50">
-            Thinking Mode Active
+          <span className="px-2 py-0.5 rounded bg-blue-950/60 text-blue-400 border border-blue-800/50">
+            Think Mode
           </span>
         )}
-      </p>
+        {enableWebSearch && (
+          <span className="px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-800/50">
+            SearXNG Search
+          </span>
+        )}
+      </div>
 
       {/* Connection warning if offline */}
       {!isOnline && (
         <div className="mb-6 w-full max-w-lg p-3.5 rounded-lg border border-red-900/50 bg-red-950/20 text-left text-xs font-mono text-zinc-300">
           <div className="flex items-center space-x-2 text-red-400 font-semibold mb-1">
             <span className="w-2 h-2 rounded-full bg-red-500 animate-ping"></span>
-            <span>OLLAMA SERVER NOT DETECTED ON LOCALHOST:11434</span>
+            <span>BACKEND SERVICES NOT DETECTED</span>
           </div>
           <p className="text-zinc-400 mb-2">
-            To start Ollama with your downloaded Qwen 3.5 model, run:
+            Ensure the local services are running on localhost:
           </p>
-          <div className="bg-[#0b0c10] p-2 rounded border border-zinc-800 text-zinc-200 select-all overflow-x-auto">
-            OLLAMA_MODELS=/usr/share/ollama/.ollama/models ollama serve
+          <div className="bg-[#0b0c10] p-2 rounded border border-zinc-800 text-zinc-200 select-all overflow-x-auto space-y-1">
+            <div>Ollama: <code>http://127.0.0.1:11434</code></div>
+            <div>SearXNG: <code>http://127.0.0.1:8080</code></div>
           </div>
         </div>
       )}
@@ -116,4 +129,3 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     </div>
   );
 };
-

@@ -1,18 +1,21 @@
-import { AppSettings, MessageMetrics, OllamaModelTag } from '../types/chat';
+import { AppSettings, MessageMetrics, OllamaModelTag, SourceReference } from '../types/chat';
 
 export interface StreamUpdate {
   content: string;
   thinking?: string;
   isThinkingActive?: boolean;
+  searchStatus?: string;
+  searchQuery?: string;
+  sources?: SourceReference[];
   done?: boolean;
   metrics?: MessageMetrics;
 }
 
 export class OllamaService {
   /**
-   * Fetch available models from Ollama
+   * Fetch available models
    */
-  static async getModels(baseUrl: string): Promise<OllamaModelTag[]> {
+  static async getModels(baseUrl: string = '/api'): Promise<OllamaModelTag[]> {
     try {
       const url = `${baseUrl}/tags`;
       const res = await fetch(url, { method: 'GET' });
@@ -22,29 +25,34 @@ export class OllamaService {
       const data = await res.json();
       return (data.models || []) as OllamaModelTag[];
     } catch (err) {
-      console.warn('Failed to fetch models from Ollama:', err);
+      console.warn('Failed to fetch models:', err);
       return [];
     }
   }
 
   /**
-   * Healthcheck to verify Ollama status
+   * Healthcheck to verify backend status
    */
-  static async checkHealth(baseUrl: string): Promise<boolean> {
+  static async checkHealth(baseUrl: string = '/api'): Promise<boolean> {
     try {
+      // Try /api/health first, then /tags
+      const healthUrl = `${baseUrl}/health`;
+      const res = await fetch(healthUrl, { method: 'GET', signal: AbortSignal.timeout(3000) });
+      if (res.ok) return true;
+
       const tagsUrl = `${baseUrl}/tags`;
-      const res = await fetch(tagsUrl, { method: 'GET', signal: AbortSignal.timeout(3000) });
-      return res.ok;
+      const tagsRes = await fetch(tagsUrl, { method: 'GET', signal: AbortSignal.timeout(3000) });
+      return tagsRes.ok;
     } catch {
       return false;
     }
   }
 
   /**
-   * Stream a chat response from Ollama
+   * Stream a chat response from Cypher Backend (with SearXNG & Ollama support)
    */
   static async streamChat({
-    baseUrl,
+    baseUrl = '/api',
     messages,
     settings,
     onUpdate,
@@ -58,19 +66,6 @@ export class OllamaService {
   }): Promise<void> {
     const chatUrl = `${baseUrl}/chat`;
 
-    // Prepare system messages and conversation history
-    const payloadMessages = [...messages];
-
-    const userSystemPrompt = settings.systemPrompt?.trim();
-    if (userSystemPrompt) {
-      const existingSysIdx = payloadMessages.findIndex((m) => m.role === 'system');
-      if (existingSysIdx >= 0) {
-        payloadMessages[existingSysIdx] = { role: 'system', content: userSystemPrompt };
-      } else {
-        payloadMessages.unshift({ role: 'system', content: userSystemPrompt });
-      }
-    }
-
     const response = await fetch(chatUrl, {
       method: 'POST',
       headers: {
@@ -78,7 +73,12 @@ export class OllamaService {
       },
       body: JSON.stringify({
         model: settings.model,
-        messages: payloadMessages,
+        messages,
+        enableThinking: settings.enableThinking,
+        enableWebSearch: settings.enableWebSearch,
+        temperature: settings.temperature,
+        systemPrompt: settings.systemPrompt,
+        // Also include raw Ollama parameters in case baseUrl points directly to Ollama
         stream: true,
         think: settings.enableThinking,
         keep_alive: '10m',
@@ -91,7 +91,7 @@ export class OllamaService {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Ollama API error (${response.status}): ${errorText || response.statusText}`);
+      throw new Error(`Chat API error (${response.status}): ${errorText || response.statusText}`);
     }
 
     if (!response.body) {
@@ -102,9 +102,11 @@ export class OllamaService {
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
 
-    let accumulatedThinking = '';
     let accumulatedContent = '';
-    let isThinkingActive = false;
+    let accumulatedThinking = '';
+    let currentSources: SourceReference[] = [];
+    let currentSearchStatus: string | undefined;
+    let currentSearchQuery: string | undefined;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -118,38 +120,78 @@ export class OllamaService {
         const trimmed = line.trim();
         if (!trimmed) continue;
 
+        // Check for Server-Sent Events format (data: {...})
+        if (trimmed.startsWith('data: ')) {
+          const jsonStr = trimmed.slice(6).trim();
+          try {
+            const event = JSON.parse(jsonStr);
+
+            if (event.type === 'status') {
+              currentSearchStatus = event.status;
+              if (event.query) currentSearchQuery = event.query;
+              onUpdate({
+                content: accumulatedContent,
+                thinking: accumulatedThinking || undefined,
+                searchStatus: currentSearchStatus,
+                searchQuery: currentSearchQuery,
+                sources: currentSources,
+              });
+            } else if (event.type === 'sources') {
+              currentSources = event.sources || [];
+              onUpdate({
+                content: accumulatedContent,
+                thinking: accumulatedThinking || undefined,
+                searchStatus: currentSearchStatus,
+                searchQuery: currentSearchQuery,
+                sources: currentSources,
+              });
+            } else if (event.type === 'chunk') {
+              accumulatedContent = event.content ?? accumulatedContent;
+              if (event.thinking !== undefined) {
+                accumulatedThinking = event.thinking;
+              }
+              onUpdate({
+                content: accumulatedContent,
+                thinking: accumulatedThinking || undefined,
+                isThinkingActive: event.isThinkingActive,
+                searchStatus: currentSearchStatus,
+                searchQuery: currentSearchQuery,
+                sources: currentSources,
+                metrics: event.metrics,
+              });
+            } else if (event.type === 'done') {
+              onUpdate({
+                content: accumulatedContent,
+                thinking: accumulatedThinking || undefined,
+                isThinkingActive: false,
+                searchStatus: undefined,
+                searchQuery: currentSearchQuery,
+                sources: currentSources,
+                done: true,
+                metrics: event.metrics,
+              });
+              return;
+            } else if (event.type === 'error') {
+              throw new Error(event.error || 'Server error occurred');
+            }
+          } catch (e: any) {
+            if (e.message && e.message.includes('Server error')) throw e;
+            console.warn('Failed to parse SSE event data:', trimmed, e);
+          }
+          continue;
+        }
+
+        // Direct NDJSON fallback (if pointing directly to Ollama without server)
         try {
           const parsed = JSON.parse(trimmed);
-          const rawThinkingChunk = parsed.message?.thinking || '';
-          const rawContentChunk = parsed.message?.content || '';
+          const rawThinking = parsed.message?.thinking || '';
+          const rawContent = parsed.message?.content || '';
 
-          // 1. Check for native Ollama thinking field (supported by qwen3.5, deepseek, etc.)
-          if (rawThinkingChunk) {
-            accumulatedThinking += rawThinkingChunk;
-            isThinkingActive = true;
-          }
-
-          if (rawContentChunk) {
-            // Once content starts arriving, thinking phase is completed
-            if (isThinkingActive && !rawThinkingChunk) {
-              isThinkingActive = false;
-            }
-
-            // Check if model emitted inline <think> tags within content
-            if (rawContentChunk.includes('<think>') || accumulatedContent.includes('<think>')) {
-              accumulatedContent += rawContentChunk;
-              const parsedInline = this.parseInlineThoughtTags(accumulatedContent);
-              accumulatedThinking = (accumulatedThinking ? accumulatedThinking + '\n' : '') + parsedInline.thinking;
-              accumulatedContent = parsedInline.content;
-              isThinkingActive = parsedInline.isThinkingActive;
-            } else {
-              accumulatedContent += rawContentChunk;
-            }
-          }
+          if (rawThinking) accumulatedThinking += rawThinking;
+          if (rawContent) accumulatedContent += rawContent;
 
           let metrics: MessageMetrics | undefined;
           if (parsed.done) {
-            isThinkingActive = false;
             const evalCount = parsed.eval_count || 0;
             const evalDurationNs = parsed.eval_duration || 0;
             const totalDurationNs = parsed.total_duration || 0;
@@ -164,51 +206,27 @@ export class OllamaService {
             };
           }
 
-          // If user disabled thinking mode, don't surface thinking if they didn't want it
-          const finalThinking = settings.enableThinking ? accumulatedThinking : undefined;
-
           onUpdate({
             content: accumulatedContent,
-            thinking: finalThinking || undefined,
-            isThinkingActive,
+            thinking: settings.enableThinking ? accumulatedThinking : undefined,
+            isThinkingActive: Boolean(rawThinking),
             done: parsed.done,
             metrics,
           });
-        } catch (e) {
-          console.warn('Failed to parse line chunk:', trimmed, e);
+        } catch {
+          // ignore non-json line
         }
       }
     }
-  }
 
-  /**
-   * Helper to parse inline <think>...</think> tags if present in content
-   */
-  static parseInlineThoughtTags(text: string): { thinking: string; content: string; isThinkingActive: boolean } {
-    const thinkOpenIndex = text.indexOf('<think>');
-    if (thinkOpenIndex === -1) {
-      return { thinking: '', content: text, isThinkingActive: false };
-    }
-
-    const thinkCloseIndex = text.indexOf('</think>');
-    if (thinkCloseIndex === -1) {
-      const preThink = text.slice(0, thinkOpenIndex);
-      const thinking = text.slice(thinkOpenIndex + 7);
-      return {
-        thinking: thinking.trimStart(),
-        content: preThink.trim(),
-        isThinkingActive: true,
-      };
-    }
-
-    const preThink = text.slice(0, thinkOpenIndex);
-    const thinking = text.slice(thinkOpenIndex + 7, thinkCloseIndex).trim();
-    const postThink = text.slice(thinkCloseIndex + 8).trimStart();
-
-    return {
-      thinking,
-      content: (preThink + (preThink && postThink ? '\n' : '') + postThink).trim(),
+    onUpdate({
+      content: accumulatedContent,
+      thinking: accumulatedThinking || undefined,
       isThinkingActive: false,
-    };
+      searchStatus: undefined,
+      searchQuery: currentSearchQuery,
+      sources: currentSources,
+      done: true,
+    });
   }
 }

@@ -1,15 +1,39 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ChevronDown, ChevronRight, Brain, Copy, Check, Sparkles } from 'lucide-react';
 
 interface ThoughtBlockProps {
   thinking: string;
   isActive?: boolean;
+  durationMs?: number;
 }
 
-export const ThoughtBlock: React.FC<ThoughtBlockProps> = ({ thinking, isActive }) => {
-  // If active, keep open; once finished, keep open or let user collapse
+export const ThoughtBlock: React.FC<ThoughtBlockProps> = ({ thinking, isActive, durationMs }) => {
   const [isOpen, setIsOpen] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [elapsed, setElapsed] = useState<number>(0);
+  const startTimeRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let timer: any;
+    if (isActive) {
+      if (!startTimeRef.current) {
+        startTimeRef.current = Date.now();
+      }
+      timer = setInterval(() => {
+        if (startTimeRef.current) {
+          setElapsed(Date.now() - startTimeRef.current);
+        }
+      }, 100);
+    } else {
+      if (startTimeRef.current && !durationMs) {
+        setElapsed(Date.now() - startTimeRef.current);
+      }
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isActive, durationMs]);
 
   if (!thinking && !isActive) return null;
 
@@ -20,8 +44,14 @@ export const ThoughtBlock: React.FC<ThoughtBlockProps> = ({ thinking, isActive }
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const finalDurationSec = durationMs
+    ? (durationMs / 1000).toFixed(1)
+    : elapsed > 0
+    ? (elapsed / 1000).toFixed(1)
+    : null;
+
   return (
-    <div className="my-2 border border-border-subtle rounded-lg bg-[#0c0e12] overflow-hidden text-xs">
+    <div className="my-2.5 border border-border-subtle rounded-lg bg-[#0c0e12] overflow-hidden text-xs">
       {/* Header bar of Thought Block */}
       <button
         onClick={() => setIsOpen(!isOpen)}
@@ -37,17 +67,25 @@ export const ThoughtBlock: React.FC<ThoughtBlockProps> = ({ thinking, isActive }
           <div className="flex items-center space-x-1.5 font-mono">
             <Brain className={`w-3.5 h-3.5 ${isActive ? 'text-blue-400 animate-pulse' : 'text-zinc-500'}`} />
             <span className="font-medium text-zinc-300">
-              {isActive ? 'Reasoning step-by-step...' : 'Thought Process'}
+              {isActive ? 'Reasoning in progress...' : 'Thought Process'}
             </span>
           </div>
 
-          {isActive && (
-            <span className="flex h-1.5 w-1.5 rounded-full bg-blue-400 animate-ping ml-1" />
+          {isActive ? (
+            <span className="font-mono text-[11px] text-blue-400 font-semibold px-1.5 py-0.2 rounded bg-blue-950/40 border border-blue-800/40">
+              {(elapsed / 1000).toFixed(1)}s
+            </span>
+          ) : (
+            finalDurationSec && (
+              <span className="font-mono text-[11px] text-zinc-500">
+                · {finalDurationSec}s
+              </span>
+            )
           )}
         </div>
 
         <div className="flex items-center space-x-2">
-          <span className="text-[11px] font-mono text-zinc-500">
+          <span className="text-[11px] font-mono text-zinc-500 hidden sm:inline">
             {thinking ? `${thinking.length} chars` : 'thinking...'}
           </span>
 
@@ -70,7 +108,7 @@ export const ThoughtBlock: React.FC<ThoughtBlockProps> = ({ thinking, isActive }
           {thinking || (
             <div className="flex items-center space-x-2 text-zinc-500 py-1 italic">
               <Sparkles className="w-3.5 h-3.5 text-blue-400/70 animate-spin" />
-              <span>Analyzing context and formulating response...</span>
+              <span>Analyzing context and formulating reasoning chain...</span>
             </div>
           )}
         </div>
@@ -78,4 +116,3 @@ export const ThoughtBlock: React.FC<ThoughtBlockProps> = ({ thinking, isActive }
     </div>
   );
 };
-

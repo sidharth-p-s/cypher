@@ -78,18 +78,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             />
           </div>
 
-          {/* Ollama API Endpoint */}
+          {/* API Endpoint */}
           <div className="space-y-1.5">
-            <label className="text-zinc-400 font-mono">Ollama Endpoint</label>
+            <label className="text-zinc-400 font-mono">Backend API Endpoint</label>
             <input
               type="text"
               value={localSettings.ollamaBaseUrl}
               onChange={(e) => setLocalSettings({ ...localSettings, ollamaBaseUrl: e.target.value })}
-              placeholder="/ollama-api or http://127.0.0.1:11434/api"
+              placeholder="/api or http://127.0.0.1:3001/api"
               className="w-full px-3 py-2 rounded-lg bg-surface-200 border border-border text-zinc-100 font-mono focus:outline-none focus:border-zinc-500"
             />
             <p className="text-[11px] text-zinc-500">
-              Default <code className="text-zinc-400">/ollama-api</code> proxies requests through Vite to bypass browser CORS restrictions.
+              Default <code className="text-zinc-400">/api</code> connects to the Cypher backend which orchestrates SearXNG (<code className="text-zinc-400">http://127.0.0.1:8080</code>) and Ollama (<code className="text-zinc-400">http://127.0.0.1:11434</code>).
             </p>
           </div>
 

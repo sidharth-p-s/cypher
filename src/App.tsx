@@ -10,9 +10,10 @@ import { OllamaService, StreamUpdate } from './services/ollama';
 const DEFAULT_SETTINGS: AppSettings = {
   model: 'qwen3.5:9b',
   enableThinking: true,
+  enableWebSearch: false,
   systemPrompt: '',
   temperature: 0.7,
-  ollamaBaseUrl: '/ollama-api',
+  ollamaBaseUrl: '/api',
 };
 
 export const App: React.FC = () => {
@@ -71,7 +72,7 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Poll / Check Ollama health & models
+  // Poll / Check backend health & models
   const checkStatusAndModels = useCallback(async () => {
     const online = await OllamaService.checkHealth(settings.ollamaBaseUrl);
     setIsOnline(online);
@@ -80,7 +81,6 @@ export const App: React.FC = () => {
       const fetchedModels = await OllamaService.getModels(settings.ollamaBaseUrl);
       setModels(fetchedModels);
 
-      // If current selected model isn't in models, but qwen3.5:9b or any model exists, keep or suggest
       if (fetchedModels.length > 0) {
         const hasCurrent = fetchedModels.some((m) => m.name === settings.model);
         if (!hasCurrent) {
@@ -123,6 +123,7 @@ export const App: React.FC = () => {
       role: 'assistant',
       content: '',
       thinking: '',
+      searchStatus: settings.enableWebSearch ? 'Checking if web search is needed...' : undefined,
       isStreaming: true,
       isThinkingActive: settings.enableThinking,
       timestamp: Date.now(),
@@ -136,9 +137,8 @@ export const App: React.FC = () => {
     abortControllerRef.current = abortController;
 
     try {
-      // Build conversation payload for Ollama
       const apiMessages = newMessages
-        .slice(0, -1) // omit the empty streaming assistant message
+        .slice(0, -1) // omit the placeholder assistant message
         .map((m) => ({
           role: m.role,
           content: m.content,
@@ -158,6 +158,9 @@ export const App: React.FC = () => {
                   content: update.content,
                   thinking: update.thinking,
                   isThinkingActive: update.isThinkingActive,
+                  searchStatus: update.searchStatus,
+                  searchQuery: update.searchQuery ?? msg.searchQuery,
+                  sources: update.sources ?? msg.sources,
                   isStreaming: !update.done,
                   metrics: update.metrics || msg.metrics,
                 };
@@ -179,9 +182,10 @@ export const App: React.FC = () => {
                 ...msg,
                 content:
                   msg.content ||
-                  `⚠️ **Error connecting to Ollama**: ${err.message || 'Unknown network error'}.\n\nPlease ensure Ollama is running at \`${settings.ollamaBaseUrl}\`. Run:\n\`\`\`bash\nOLLAMA_MODELS=/usr/share/ollama/.ollama/models ollama serve\n\`\`\``,
+                  `⚠️ **Error communicating with Cypher Backend**: ${err.message || 'Unknown network error'}.\n\nPlease ensure your Ollama instance (\`http://127.0.0.1:11434\`) and SearXNG (\`http://127.0.0.1:8080\`) are running.`,
                 isStreaming: false,
                 isThinkingActive: false,
+                searchStatus: undefined,
               };
             }
             return msg;
@@ -233,6 +237,7 @@ export const App: React.FC = () => {
           <EmptyState
             modelName={settings.model}
             enableThinking={settings.enableThinking}
+            enableWebSearch={settings.enableWebSearch}
             onSelectPrompt={handleSendMessage}
             isOnline={isOnline}
           />
@@ -258,6 +263,10 @@ export const App: React.FC = () => {
         onToggleThinking={() =>
           handleUpdateSettings({ enableThinking: !settings.enableThinking })
         }
+        enableWebSearch={settings.enableWebSearch}
+        onToggleWebSearch={() =>
+          handleUpdateSettings({ enableWebSearch: !settings.enableWebSearch })
+        }
       />
 
       {/* Settings Modal */}
@@ -273,4 +282,3 @@ export const App: React.FC = () => {
 };
 
 export default App;
-

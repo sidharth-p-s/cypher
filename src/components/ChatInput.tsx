@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Square, Brain, CornerDownLeft } from 'lucide-react';
+import { Send, Square, Brain, Globe } from 'lucide-react';
 
 interface ChatInputProps {
   onSendMessage: (content: string) => void;
@@ -7,6 +7,8 @@ interface ChatInputProps {
   onStopStreaming: () => void;
   enableThinking: boolean;
   onToggleThinking: () => void;
+  enableWebSearch: boolean;
+  onToggleWebSearch: () => void;
   disabled?: boolean;
 }
 
@@ -16,6 +18,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onStopStreaming,
   enableThinking,
   onToggleThinking,
+  enableWebSearch,
+  onToggleWebSearch,
   disabled = false,
 }) => {
   const [input, setInput] = useState('');
@@ -66,6 +70,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         <div className="absolute bottom-2.5 left-3 right-3 flex items-center justify-between pointer-events-none">
           {/* Left tools inside input */}
           <div className="flex items-center space-x-2 pointer-events-auto">
+            {/* Thinking Mode Toggle */}
             <button
               type="button"
               onClick={onToggleThinking}
@@ -77,9 +82,27 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               title="Toggle Thinking Mode for step-by-step reasoning"
             >
               <Brain className={`w-3.5 h-3.5 ${enableThinking ? 'text-blue-400' : 'text-zinc-500'}`} />
-              <span className="text-[11px]">Thinking Mode:</span>
+              <span className="text-[11px] hidden sm:inline">Thinking:</span>
               <span className={`text-[10px] font-semibold ${enableThinking ? 'text-blue-300' : 'text-zinc-500'}`}>
                 {enableThinking ? 'ON' : 'OFF'}
+              </span>
+            </button>
+
+            {/* Web Search Toggle */}
+            <button
+              type="button"
+              onClick={onToggleWebSearch}
+              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-mono transition-all border ${
+                enableWebSearch
+                  ? 'bg-emerald-950/40 border-emerald-600/50 text-emerald-300'
+                  : 'bg-surface-200 border-border text-zinc-500 hover:text-zinc-300'
+              }`}
+              title="Toggle Web Search (SearXNG)"
+            >
+              <Globe className={`w-3.5 h-3.5 ${enableWebSearch ? 'text-emerald-400' : 'text-zinc-500'}`} />
+              <span className="text-[11px] hidden sm:inline">Search:</span>
+              <span className={`text-[10px] font-semibold ${enableWebSearch ? 'text-emerald-300' : 'text-zinc-500'}`}>
+                {enableWebSearch ? 'ON' : 'OFF'}
               </span>
             </button>
           </div>
@@ -120,4 +143,3 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     </div>
   );
 };
-
