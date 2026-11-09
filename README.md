@@ -1,26 +1,13 @@
 # Cypher - Modern Local AI Interface
 
-A sleek, precision dark-themed chat interface built for local LLMs running via **Ollama**, specifically configured for **Qwen 3.5 9B** with deep **Think Mode** support.
+A sleek, precision dark-themed chat interface built for local LLMs running via **Ollama**, specifically configured for **Qwen 3.5 9B** with deep **Think Mode** support and an **intelligent Web Search & Content Extraction pipeline** powered by a local **SearXNG** instance.
 
-Designed with a high-end, distraction-free aesthetic (neutral graphite, deep obsidian, clean typography), avoiding generic design clichés.
+Designed with a high-end, distraction-free aesthetic (neutral graphite, deep obsidian, clean typography) — strictly avoiding generic cliché AI gradients.
 
 ---
 
 ## Architecture & Workflow
 
-<<<<<<< HEAD
-- **Qwen 3.5 9B Native Integration**: Pre-configured to communicate directly with Ollama's local REST API (`/api/chat` and `/api/tags`).
-- **Live "Think Mode" (Reasoning Blocks)**:
-  - Dynamic streaming extraction of the model's internal step-by-step reasoning tokens (`message.thinking` or `<think>...</think>`).
-  - Collapsible Thought Process panel with character count and copy support.
-  - Dedicated toggle switch in the header and input bar.
-- **Zero-Config CORS Proxy**:
-  - Vite dev server automatically proxies `/ollama-api` requests directly to `http://127.0.0.1:11434`, eliminating browser CORS issues out-of-the-box.
-- **Model Detection & Settings**:
-  - Auto-detects installed Ollama models (`qwen3.5:9b`, `qwen3.5:4b`, etc.).
-  - Sampling temperature slider (0.0 to 1.5).
-  - Custom system prompt support.
-=======
 Cypher combines local model inference with private, privacy-respecting metasearch and deterministic webpage extraction. When Web Search is enabled, queries pass through a multi-stage pipeline designed around Qwen's context budget before generating an answer with verified citations.
 
 ```mermaid
@@ -64,6 +51,12 @@ flowchart TD
   - Dynamic streaming and parsing of internal step-by-step reasoning tokens (`message.thinking` or `<think>...</think>`).
   - Sleek collapsible Thought Process panel with execution timers and one-click copy.
   - Independent toggle switches on both header and chat input.
+- **Model Detection & Settings**:
+  - Auto-detects installed Ollama models (`qwen3.5:9b`, `qwen3.5:4b`, etc.).
+  - Sampling temperature slider (0.0 to 1.5).
+  - Custom system prompt support.
+- **Zero-Config CORS Proxy**:
+  - Vite dev server automatically proxies `/ollama-api` requests directly to `http://127.0.0.1:11434`, eliminating browser CORS issues out-of-the-box.
 
 ### 2. Intelligent Web Search Workflow
 - **Independent Controls**: Web Search and Think Mode operate independently or simultaneously.
@@ -130,7 +123,6 @@ Environment variables (optional):
 - `PORT`: Backend server port (default: `3001`).
 - `OLLAMA_URL`: Ollama endpoint (default: `http://127.0.0.1:11434`).
 - `SEARXNG_URL`: SearXNG instance URL (default: `http://127.0.0.1:8080`).
->>>>>>> 3da935c (docs: Update README with intelligent web search, extraction architecture, and security documentation)
 
 ---
 
@@ -177,13 +169,7 @@ http://localhost:5173
 
 ## Tech Stack
 
-<<<<<<< HEAD
-- **Frontend**: React 18, TypeScript, Vite
-- **Styling**: Tailwind CSS, Lucide Icons, Custom Markdown Theme
-- **Backend / Engine**: Ollama REST API (`/api/chat`, `/api/tags`) with HTTP streaming (NDJSON)
-=======
 - **Frontend**: React 18, TypeScript, Vite, Tailwind CSS, Lucide Icons, KaTeX (`rehype-katex`, `remark-math`, `remark-gfm`).
 - **Backend**: Express 5, TypeScript (`tsx`), Server-Sent Events (SSE).
 - **Search & Extraction**: SearXNG, `@mozilla/readability`, `linkedom`.
 - **Inference Engine**: Ollama REST API (`qwen3.5:9b`).
->>>>>>> 3da935c (docs: Update README with intelligent web search, extraction architecture, and security documentation)
