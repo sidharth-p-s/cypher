@@ -38,19 +38,42 @@ export class OllamaClient {
   }
 
   /**
-   * Fast classification to decide if web search is needed, and extract query
+   * Fast classification to decide if web search is needed, and extract contextual query
    */
-  async classifySearch(model: string, userMessage: string): Promise<SearchDecision> {
+  async classifySearch(model: string, messages: ChatMessagePayload[]): Promise<SearchDecision> {
     try {
-      const systemInstruction = `You are an intelligent search classifier. Output valid JSON in this exact structure:
+      const systemInstruction = `You are Cypher's Search Query Optimizer.
+Analyze the conversation history and the latest user request to decide if a web search is needed, and construct an optimal, standalone search query.
+
+Output valid JSON in this exact structure:
 {"needSearch": boolean, "query": string}
 
-Rules:
-1. Set "needSearch" to true ONLY IF answering accurately requires current/real-time information, latest news, recent documentation, today's events, weather, stock prices, or specific live facts.
-2. Set "needSearch" to false for greetings, conversational chat, code generation, algorithms, math problems, summaries, translations, opinions, and general knowledge.
-3. If "needSearch" is true, provide a concise, focused 2-5 word search query in "query".
-4. If "needSearch" is false, set "query" to "".
+Decision Rules:
+1. Set "needSearch" to true if the latest message asks about:
+   - Current news, live events, recent developments, updates, or breaking stories (even if mixed with greetings like "hello", "hey").
+   - Real-time data (weather, stock prices, sports scores, release dates, current status).
+   - Specific recent statements, controversies, investigations, or actions by people or organizations.
+   - Any follow-up question inquiring for "more news", "latest updates", or asking what someone said or did regarding a topic.
+2. Set "needSearch" to false ONLY if the user is asking for:
+   - Purely conversational greetings without any question (e.g. just "hi", "how are you doing").
+   - Code generation, debugging, algorithms, math problems.
+   - Conceptual explanations, translations, creative writing.
+   - Questions strictly about the ongoing conversation that do not require external verification.
+
+Query Formulation Rules (CRITICAL):
+- The query MUST be standalone and context-complete.
+- Resolve all ambiguous pronouns ("this", "he", "it", "that", "the news", "what happened", "something") using the conversation history.
+- NEVER output generic bare words like "latest news", "breaking news", "news", or "updates".
+- ALWAYS incorporate the specific entities, names, companies, and subjects from the conversation (e.g., if discussing Nvidia CEO Jensen Huang and Trump, output "Donald Trump Nvidia Jensen Huang news" or "Trump comments Jensen Huang affair investigation").
+- Keep the query between 2 to 6 focused search keywords.
+- If needSearch is false, set "query" to "".
 Do not output any markdown formatting or extra text outside the JSON object.`;
+
+      // Extract recent conversation turns (up to last 6 messages) to maintain context
+      const recentHistory = messages.slice(-6).map((m) => ({
+        role: m.role === 'system' ? 'user' : m.role,
+        content: m.content.slice(0, 1000),
+      }));
 
       const res = await fetch(`${this.baseUrl}/api/chat`, {
         method: 'POST',
@@ -59,7 +82,7 @@ Do not output any markdown formatting or extra text outside the JSON object.`;
           model,
           messages: [
             { role: 'system', content: systemInstruction },
-            { role: 'user', content: userMessage },
+            ...recentHistory,
           ],
           format: 'json',
           think: false,
