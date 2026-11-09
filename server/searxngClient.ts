@@ -12,7 +12,7 @@ export class SearXNGClient {
    */
   async checkHealth(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/search?q=ping&format=json`, {
+      const res = await fetch(`${this.baseUrl}/config`, {
         method: 'GET',
         signal: AbortSignal.timeout(3000),
       });
