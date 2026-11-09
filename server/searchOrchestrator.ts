@@ -6,7 +6,7 @@ export interface OrchestrationResult {
   messages: ChatMessagePayload[];
   sources: SourceReference[];
   searchPerformed: boolean;
-  searchQuery?: string;
+  searchHeading?: string;
   searchError?: string;
 }
 
@@ -31,7 +31,10 @@ export class SearchOrchestrator {
   }
 
   /**
-   * Orchestrate search detection, query generation, SearXNG querying, and context construction
+   * Two-Stage Intelligent Web Search Workflow:
+   * Stage One: Generate search heading from user request using Qwen
+   * Stage Two: Query local SearXNG API (retrieve 10 results, deduplicate, normalize, rank, select best 5-8)
+   * Stage Three: Synthesize final answer using the dedicated web search prompt
    */
   async process({
     model,
@@ -50,7 +53,7 @@ export class SearchOrchestrator {
       ? `${userSystemPrompt}\n\n${BASE_SYSTEM_DIRECTIVE}`
       : BASE_SYSTEM_DIRECTIVE;
 
-    // If web search is disabled, proceed directly with memory grounding
+    // When Web Search is disabled: send requests directly to Ollama
     if (!enableWebSearch) {
       const preparedMessages = this.applySystemPrompt(messages, basePrompt);
       return {
@@ -71,124 +74,106 @@ export class SearchOrchestrator {
       };
     }
 
-    // Step 1: Decision & Query Generation with full conversation context
-    onStatus('Checking if web search is needed...');
-    const decision = await this.ollamaClient.classifySearch(model, messages);
+    const originalUserQuery = messages[lastUserIdx].content.trim();
 
-    if (!decision.needSearch || !decision.query) {
-      // Model decided search is not needed for this query
-      const preparedMessages = this.applySystemPrompt(messages, basePrompt);
-      return {
-        messages: preparedMessages,
-        sources: [],
-        searchPerformed: false,
-      };
-    }
+    // Stage One: Search Heading Generation
+    onStatus('Understanding your question...');
+    onStatus('Preparing search query...');
 
-    // Step 2: Sanitize query to ensure it is context-complete and never generic
-    const query = this.sanitizeSearchQuery(decision.query, messages);
-    onStatus(`Searching the web for "${query}"...`, query);
-
-    let sources: SourceReference[] = [];
-    let searchError: string | undefined;
-
+    let searchHeading: string;
     try {
-      sources = await this.searxngClient.search(query, 6);
-    } catch (err: any) {
-      console.warn('SearXNG search failed:', err.message);
-      searchError = err.message || 'SearXNG search service unavailable';
-      onStatus(`Web search warning: ${searchError}. Generating response with model knowledge...`, query);
+      searchHeading = await this.ollamaClient.generateSearchHeading(model, originalUserQuery);
+    } catch (headingErr: any) {
+      throw new Error(`Failed to generate search heading: ${headingErr.message || headingErr}`);
     }
+
+    if (!searchHeading || !searchHeading.trim()) {
+      throw new Error('Invalid search heading returned by Qwen.');
+    }
+
+    // Stage Two: SearXNG Search (retrieve 10 results initially)
+    onStatus('Searching the web...', searchHeading);
+
+    let rawResults: any[] = [];
+    try {
+      rawResults = await this.searxngClient.fetchInitialResults(searchHeading, 10);
+    } catch (searchErr: any) {
+      // Never silently fall back to a fabricated web-search answer
+      throw searchErr;
+    }
+
+    onStatus(`Retrieved ${rawResults.length} results.`, searchHeading);
+
+    if (rawResults.length === 0) {
+      throw new Error(`No search results found on the web for "${searchHeading}".`);
+    }
+
+    // Search Result Processing: deduplicate, normalize, rank, select best 5–8 results
+    onStatus('Filtering and ranking results...', searchHeading);
+    const sources = this.searxngClient.processAndRankResults(rawResults, originalUserQuery);
 
     if (sources.length === 0) {
-      if (!searchError) {
-        onStatus(`No search results found for "${query}". Answering with model knowledge...`, query);
-      }
-      const preparedMessages = this.applySystemPrompt(messages, basePrompt);
-      return {
-        messages: preparedMessages,
-        sources: [],
-        searchPerformed: true,
-        searchQuery: query,
-        searchError: searchError || 'No search results found',
-      };
+      throw new Error(
+        `No usable or relevant search results remained after filtering for "${searchHeading}".`
+      );
     }
 
-    // Step 3: Formatting retrieved context for Qwen
-    onStatus('Analysing search results and synthesizing answer...', query);
+    onStatus('Analyzing relevant sources...', searchHeading);
 
-    const currentDate = new Date().toISOString().split('T')[0];
-    const formattedSnippets = sources
-      .map(
-        (src, idx) =>
-          `[${idx + 1}] Title: ${src.title}\nDomain: ${src.domain}\nURL: ${src.url}\nExcerpt: ${src.content}`
-      )
+    // Format retrieved search results with [S1], [S2] identifiers
+    const formattedSearchResults = sources
+      .map((src) => {
+        let meta = `[${src.id}] Title: ${src.title}\nDomain: ${src.domain}`;
+        if (src.publishedDate) meta += `\nPublished Date: ${src.publishedDate}`;
+        if (src.engine) meta += `\nEngine: ${src.engine}`;
+        return `${meta}\nExcerpt: ${src.content}`;
+      })
       .join('\n\n');
 
-    // 1. Anti-refusal and Non-contradiction System Directive
-    const searchSystemDirective = `${basePrompt}
+    // Stage Three: Final Answer Generation Instruction
+    const stageThreeInstruction = `You are an AI assistant answering a user using information retrieved from a live web search.
 
-Search Guidelines:
-- You have real-time web search results retrieved specifically for the user's question ("${query}").
-- Synthesize an accurate, direct, well-structured answer citing your sources with inline reference numbers like [1], [2].
-- Search Scope & Continuity:
-  - The provided search results reflect the specific query just executed.
-  - DO NOT assume that because an earlier topic is not repeated in the current search snippets, it didn't happen or was fake.
-  - NEVER claim or suggest that earlier assistant responses or news in this conversation were "fabricated", "hallucinations", or "unverified rumors".
-  - If the search results do not contain an answer to a specific question (e.g. no statement from a person was found), simply explain factually what the search results show without questioning the premise or contradicting previous turns.
-- Never claim you lack real-time access or internet access when search results are provided.`;
+Original user request:
+${originalUserQuery}
 
-    // Apply system prompt
-    const augmentedMessages = this.applySystemPrompt(messages, searchSystemDirective);
+Search heading:
+${searchHeading}
 
-    // 2. Put search context directly in the user turn so instruction-tuned models like Qwen use it directly
+Here are the actual results retrieved from the web:
+
+${formattedSearchResults}
+
+Instructions:
+
+1. Understand and answer the user's original question.
+2. Analyze the retrieved information rather than merely summarizing search snippets.
+3. Use relevant examples, techniques, ideas and code from the retrieved results.
+4. When the user asks to build or implement something, use the retrieved information as inspiration and produce your own useful implementation.
+5. Do not blindly copy code. Explain and adapt it where appropriate.
+6. Never invent facts, URLs, publication dates or sources.
+7. If the retrieved information is insufficient, explicitly acknowledge the limitation.
+8. Do not claim to have searched for information that was not included in the supplied results.
+9. Reference sources using identifiers supplied by the application.`;
+
+    const augmentedMessages = this.applySystemPrompt(messages, stageThreeInstruction);
+
+    // Ensure the last user message turn contains the original user question
     const targetUserIdx = augmentedMessages.map((m) => m.role).lastIndexOf('user');
     if (targetUserIdx !== -1) {
-      const originalUserText = augmentedMessages[targetUserIdx].content;
       augmentedMessages[targetUserIdx] = {
         role: 'user',
-        content: `Context from real-time web search for "${query}" (Date: ${currentDate}):\n\n${formattedSnippets}\n\nUser Question: ${originalUserText}`,
+        content: originalUserQuery,
       };
     }
+
+    onStatus('Generating answer...', searchHeading);
 
     return {
       messages: augmentedMessages,
       sources,
       searchPerformed: true,
-      searchQuery: query,
+      searchHeading,
     };
-  }
-
-  /**
-   * Ensure search query never consists solely of generic terms like "latest news"
-   */
-  private sanitizeSearchQuery(rawQuery: string, messages: ChatMessagePayload[]): string {
-    let clean = rawQuery.trim().replace(/^["']|["']$/g, '');
-    const genericWords = new Set([
-      'latest', 'news', 'breaking', 'update', 'updates', 'today', 'search', 'info',
-      'get', 'the', 'a', 'an', 'is', 'current', 'recent', 'live'
-    ]);
-    const terms = clean.toLowerCase().split(/\s+/).filter((t) => t && !genericWords.has(t));
-
-    // If query contains only generic words (e.g. "latest news", "breaking news", "updates")
-    if (terms.length === 0) {
-      const recentText = messages
-        .slice(-4)
-        .map((m) => m.content)
-        .join(' ');
-
-      const words = recentText.match(/\b[A-Z][a-zA-Z0-9_-]{2,}\b/g) || [];
-      const ignored = new Set([
-        'Cypher', 'Assistant', 'User', 'Context', 'Date', 'Question', 'URL', 'Title',
-        'Hello', 'Please', 'What', 'When', 'Where', 'Which', 'Why', 'How', 'There'
-      ]);
-      const salient = Array.from(new Set(words.filter((w) => !ignored.has(w))));
-
-      if (salient.length > 0) {
-        clean = `${salient.slice(0, 3).join(' ')} ${clean}`.trim();
-      }
-    }
-    return clean;
   }
 
   private applySystemPrompt(

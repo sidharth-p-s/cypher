@@ -95,7 +95,9 @@ app.post('/api/chat', async (req, res) => {
       streamer.sendSources(orchestrationResult.sources);
     }
 
-    streamer.sendStatus('Generating response...');
+    if (!enableWebSearch) {
+      streamer.sendStatus('Generating response...');
+    }
 
     // 2. Stream generation from Ollama
     const ollamaStreamRes = await ollamaClient.createChatStream({

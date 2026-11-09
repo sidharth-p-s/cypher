@@ -33,6 +33,29 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, modelName }) 
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Map source identifiers (like [S1], [S2], [1]) to genuine SearXNG URLs
+  const processedContent = React.useMemo(() => {
+    if (!message.content || !message.sources || message.sources.length === 0) {
+      return message.content;
+    }
+
+    const sourceMap = new Map<string, string>();
+    message.sources.forEach((s, idx) => {
+      if (s.id && s.url) sourceMap.set(s.id.toUpperCase(), s.url);
+      if (s.url) sourceMap.set(String(idx + 1), s.url);
+      if (s.url) sourceMap.set(`S${idx + 1}`, s.url);
+    });
+
+    // Replace unlinked citation tags like [S1], [S2], [1] with genuine SearXNG links
+    return message.content.replace(/\[(S\d+|\d+)\](?!\()/gi, (match, id) => {
+      const genuineUrl = sourceMap.get(id.toUpperCase()) || sourceMap.get(id);
+      if (genuineUrl) {
+        return `[${match}](${genuineUrl})`;
+      }
+      return match;
+    });
+  }, [message.content, message.sources]);
+
   return (
     <div
       className={`py-5 px-4 md:px-8 border-b border-border/40 transition-colors ${
@@ -101,11 +124,31 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, modelName }) 
 
           {/* Message Markdown Content */}
           <div className="markdown-body text-zinc-200 text-sm leading-relaxed overflow-hidden">
-            {message.content ? (
+            {processedContent ? (
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[rehypeKatex]}
                 components={{
+                  a({ node, href, children, ...props }: any) {
+                    const text = String(children).trim();
+                    const isCitation = /^\[(S\d+|\d+)\]$/i.test(text);
+
+                    return (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={
+                          isCitation
+                            ? 'inline-flex items-center text-[11px] font-mono font-medium text-emerald-400 hover:text-emerald-300 px-1 py-0.2 mx-0.5 bg-emerald-950/50 hover:bg-emerald-900/60 border border-emerald-800/60 rounded transition no-underline align-baseline cursor-pointer'
+                            : 'text-emerald-400 hover:text-emerald-300 underline underline-offset-2 transition'
+                        }
+                        {...props}
+                      >
+                        {children}
+                      </a>
+                    );
+                  },
                   code({ node, inline, className, children, ...props }: any) {
                     const match = /language-(\w+)/.exec(className || '');
                     const codeString = String(children).replace(/\n$/, '');
@@ -138,7 +181,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, modelName }) 
                   },
                 }}
               >
-                {message.content}
+                {processedContent}
               </ReactMarkdown>
             ) : (
               message.isStreaming && !message.isThinkingActive && !message.searchStatus && (
@@ -173,7 +216,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, modelName }) 
                     <div className="flex items-start justify-between space-x-2">
                       <div className="flex items-center space-x-1.5 min-w-0">
                         <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-zinc-800 text-zinc-400 font-semibold flex-shrink-0">
-                          {idx + 1}
+                          {source.id || `S${idx + 1}`}
                         </span>
                         <span className="text-xs font-medium text-zinc-300 group-hover:text-emerald-300 truncate transition">
                           {source.title}
@@ -182,9 +225,19 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, modelName }) 
                       <ExternalLink className="w-3 h-3 text-zinc-600 group-hover:text-zinc-300 flex-shrink-0 mt-0.5 transition" />
                     </div>
 
-                    <div className="mt-1 flex items-center space-x-1.5 text-[10px] font-mono text-zinc-500">
-                      <Globe className="w-2.5 h-2.5 text-zinc-600" />
-                      <span className="truncate">{source.domain}</span>
+                    <div className="mt-1 flex items-center justify-between text-[10px] font-mono text-zinc-500">
+                      <div className="flex items-center space-x-1.5 truncate">
+                        <Globe className="w-2.5 h-2.5 text-zinc-600 flex-shrink-0" />
+                        <span className="truncate">{source.domain}</span>
+                      </div>
+                      <div className="flex items-center space-x-1.5 flex-shrink-0 text-[9px] text-zinc-500">
+                        {source.engine && (
+                          <span className="px-1 py-0.2 rounded bg-zinc-800/80 uppercase tracking-wider">
+                            {source.engine}
+                          </span>
+                        )}
+                        {source.publishedDate && <span>{source.publishedDate}</span>}
+                      </div>
                     </div>
                   </a>
                 ))}

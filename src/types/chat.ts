@@ -6,10 +6,13 @@ export interface MessageMetrics {
 }
 
 export interface SourceReference {
+  id?: string;
   title: string;
   url: string;
   content: string;
   domain: string;
+  publishedDate?: string;
+  engine?: string;
 }
 
 export interface Message {

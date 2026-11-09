@@ -1,8 +1,19 @@
 export interface SourceReference {
+  id?: string;
   title: string;
   url: string;
   content: string;
   domain: string;
+  publishedDate?: string;
+  engine?: string;
+}
+
+export interface RawSearchResult {
+  title: string;
+  url: string;
+  content: string;
+  publishedDate?: string;
+  engine?: string;
 }
 
 export interface ChatMessagePayload {

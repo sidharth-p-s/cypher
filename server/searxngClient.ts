@@ -1,4 +1,4 @@
-import { SourceReference } from './types';
+import { RawSearchResult, SourceReference } from './types';
 
 export class SearXNGClient {
   private baseUrl: string;
@@ -23,46 +23,92 @@ export class SearXNGClient {
   }
 
   /**
-   * Execute search and extract structured results with intelligent filtering and ranking
+   * Normalize URLs to identify and eliminate duplicates effectively
    */
-  async search(query: string, limit: number = 6): Promise<SourceReference[]> {
-    if (!query || !query.trim()) {
+  normalizeUrl(rawUrl: string): string {
+    try {
+      const parsed = new URL(rawUrl.trim());
+      parsed.protocol = parsed.protocol.toLowerCase();
+      parsed.hostname = parsed.hostname.toLowerCase().replace(/^www\./, '');
+      parsed.hash = '';
+
+      // Strip common analytics and marketing tracking query parameters
+      const trackingParams = [
+        'utm_source',
+        'utm_medium',
+        'utm_campaign',
+        'utm_term',
+        'utm_content',
+        'fbclid',
+        'gclid',
+        'ref',
+      ];
+      trackingParams.forEach((param) => parsed.searchParams.delete(param));
+
+      // Remove trailing slash from pathname if path is not root
+      if (parsed.pathname.length > 1 && parsed.pathname.endsWith('/')) {
+        parsed.pathname = parsed.pathname.slice(0, -1);
+      }
+
+      return parsed.toString();
+    } catch {
+      return rawUrl.trim();
+    }
+  }
+
+  /**
+   * Stage Two – SearXNG Search: Initially retrieve up to 10 raw search results
+   */
+  async fetchInitialResults(heading: string, count: number = 10): Promise<RawSearchResult[]> {
+    if (!heading || !heading.trim()) {
       return [];
     }
 
-    const trimmedQuery = query.trim();
+    const trimmedHeading = heading.trim();
+    const primaryUrl = `${this.baseUrl}/search?q=${encodeURIComponent(
+      trimmedHeading
+    )}&format=json&engines=bing,qwant,yahoo,duckduckgo,google`;
+
+    let rawList: any[] = [];
 
     try {
-      // 1. Fetch search results with reliable engines first
-      const primaryUrl = `${this.baseUrl}/search?q=${encodeURIComponent(
-        trimmedQuery
-      )}&format=json&engines=bing,qwant,yahoo,duckduckgo,google`;
+      const res = await fetch(primaryUrl, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'CypherChat/1.0',
+        },
+        signal: AbortSignal.timeout(6000),
+      });
 
-      let rawResults: any[] = [];
-
-      try {
-        const res = await fetch(primaryUrl, {
-          method: 'GET',
-          headers: {
-            Accept: 'application/json',
-            'User-Agent': 'CypherChat/1.0',
-          },
-          signal: AbortSignal.timeout(6000),
-        });
-
-        if (res.ok) {
-          const data = (await res.json()) as any;
+      if (res.ok) {
+        const text = await res.text();
+        try {
+          const data = JSON.parse(text);
           if (Array.isArray(data.results)) {
-            rawResults = data.results;
+            rawList = data.results;
           }
+        } catch {
+          throw new Error('SearXNG returned invalid JSON');
         }
-      } catch (primaryErr) {
-        console.warn('SearXNG primary engine query failed, falling back to general:', primaryErr);
       }
+    } catch (primaryErr: any) {
+      if (primaryErr.message && primaryErr.message.includes('invalid JSON')) {
+        throw primaryErr;
+      }
+      if (primaryErr.name === 'TimeoutError' || primaryErr.name === 'AbortError') {
+        throw new Error('SearXNG search request timed out');
+      }
+      if (primaryErr.code === 'ECONNREFUSED' || primaryErr.message?.includes('fetch failed')) {
+        throw new Error('SearXNG search service is unreachable at ' + this.baseUrl);
+      }
+      console.warn('SearXNG primary engines query failed, attempting general fallback:', primaryErr.message);
+    }
 
-      // If primary engine query returned no results, fallback to general SearXNG search
-      if (rawResults.length === 0) {
-        const fallbackUrl = `${this.baseUrl}/search?q=${encodeURIComponent(trimmedQuery)}&format=json`;
+    // Fallback if primary returned 0 results
+    if (rawList.length === 0) {
+      const fallbackUrl = `${this.baseUrl}/search?q=${encodeURIComponent(trimmedHeading)}&format=json`;
+      try {
         const res = await fetch(fallbackUrl, {
           method: 'GET',
           headers: {
@@ -72,121 +118,203 @@ export class SearXNGClient {
           signal: AbortSignal.timeout(6000),
         });
 
-        if (res.ok) {
-          const data = (await res.json()) as any;
-          if (Array.isArray(data.results)) {
-            rawResults = data.results;
-          }
+        if (!res.ok) {
+          throw new Error(`SearXNG returned HTTP ${res.status}: ${res.statusText}`);
         }
-      }
 
-      if (rawResults.length === 0) {
-        return [];
-      }
-
-      // 2. Extract salient search terms from query to score relevance
-      const stopwords = new Set([
-        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of',
-        'with', 'and', 'or', 'about', 'latest', 'news', 'update', 'updates', 'today', 'get',
-        'what', 'when', 'where', 'who', 'why', 'how', 'did', 'does', 'do', 'i', 'you', 'he', 'she', 'it'
-      ]);
-
-      const searchTerms = trimmedQuery
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .filter((t) => t.length > 2 && !stopwords.has(t));
-
-      interface ScoredResult {
-        title: string;
-        url: string;
-        content: string;
-        domain: string;
-        isRootDomain: boolean;
-        relevanceScore: number;
-        contentLength: number;
-      }
-
-      const seenUrls = new Set<string>();
-      const scoredCandidates: ScoredResult[] = [];
-
-      for (const item of rawResults) {
-        const itemUrl = item.url?.trim();
-        if (!itemUrl || seenUrls.has(itemUrl)) continue;
-
-        let parsedUrl: URL;
+        const text = await res.text();
         try {
-          parsedUrl = new URL(itemUrl);
+          const data = JSON.parse(text);
+          if (Array.isArray(data.results)) {
+            rawList = data.results;
+          }
         } catch {
-          continue;
+          throw new Error('SearXNG returned invalid JSON');
         }
+      } catch (fallbackErr: any) {
+        if (fallbackErr.name === 'TimeoutError' || fallbackErr.name === 'AbortError') {
+          throw new Error('SearXNG search request timed out');
+        }
+        if (fallbackErr.code === 'ECONNREFUSED' || fallbackErr.message?.includes('fetch failed')) {
+          throw new Error('SearXNG search service is unreachable at ' + this.baseUrl);
+        }
+        throw fallbackErr;
+      }
+    }
 
-        const domain = parsedUrl.hostname.replace(/^www\./, '') || 'web';
-        const isRootDomain =
-          !parsedUrl.pathname || parsedUrl.pathname === '/' || parsedUrl.pathname === '/index.html';
+    // Extract exactly up to the requested initial count (10)
+    const initialSlice = rawList.slice(0, count);
 
-        const title = (item.title || domain || 'Web Document').trim();
-        const content = (item.content || '').trim();
-        const textToMatch = `${title} ${content}`.toLowerCase();
+    // Extract title, url, content, publishedDate (if available), engine (if available)
+    return initialSlice.map((item) => ({
+      title: (item.title || '').trim(),
+      url: (item.url || '').trim(),
+      content: (item.content || '').trim(),
+      publishedDate: item.publishedDate ? String(item.publishedDate).trim() : undefined,
+      engine: item.engine ? String(item.engine).trim() : undefined,
+    }));
+  }
 
-        let relevanceScore = 0;
-        for (const term of searchTerms) {
-          if (textToMatch.includes(term)) {
-            relevanceScore += 1;
-            // Bonus points if keyword is in the article title
-            if (title.toLowerCase().includes(term)) {
-              relevanceScore += 2;
-            }
+  /**
+   * Stage Two Result Processing:
+   * 1. Remove duplicate URLs (with URL normalization).
+   * 2. Remove empty or unusable results.
+   * 3. Rank remaining results based on relevance to original user request.
+   * 4. Prioritize technical explanations, implementation examples, code snippets, documentation, GitHub repos.
+   * 5. Select the best 5–8 results (or available results if fewer than 5).
+   */
+  processAndRankResults(
+    rawResults: RawSearchResult[],
+    originalUserQuery: string
+  ): SourceReference[] {
+    if (!rawResults || rawResults.length === 0) {
+      return [];
+    }
+
+    const stopwords = new Set([
+      'the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of',
+      'with', 'and', 'or', 'about', 'latest', 'news', 'update', 'updates', 'today', 'get',
+      'what', 'when', 'where', 'who', 'why', 'how', 'did', 'does', 'do', 'i', 'you', 'he',
+      'she', 'it', 'want', 'build', 'show', 'me', 'find', 'give', 'can'
+    ]);
+
+    const queryKeywords = originalUserQuery
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((t) => t.length > 2 && !stopwords.has(t));
+
+    const isTechnicalQuery =
+      /\b(code|python|program|app|application|framework|library|gui|ui|api|github|install|script|build|develop|example|tutorial|function|class)\b/i.test(
+        originalUserQuery
+      );
+
+    const seenNormalizedUrls = new Set<string>();
+    interface ScoredItem {
+      raw: RawSearchResult;
+      domain: string;
+      isRootDomain: boolean;
+      score: number;
+    }
+
+    const validCandidates: ScoredItem[] = [];
+
+    for (const item of rawResults) {
+      // 1. Remove empty or unusable results
+      if (!item.url || (!item.title && !item.content)) {
+        continue;
+      }
+
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(item.url);
+      } catch {
+        continue; // Unusable / invalid URL
+      }
+
+      // 2. Normalize URL and remove duplicates
+      const normalized = this.normalizeUrl(item.url);
+      if (seenNormalizedUrls.has(normalized)) {
+        continue;
+      }
+      seenNormalizedUrls.add(normalized);
+
+      const domain = parsedUrl.hostname.replace(/^www\./, '') || 'web';
+      const isRootDomain =
+        !parsedUrl.pathname || parsedUrl.pathname === '/' || parsedUrl.pathname === '/index.html';
+
+      const fullText = `${item.title} ${item.content}`.toLowerCase();
+
+      // 3. Rank based on relevance to original user request
+      let score = 0;
+      for (const kw of queryKeywords) {
+        if (fullText.includes(kw)) {
+          score += 2;
+        }
+        if (item.title.toLowerCase().includes(kw)) {
+          score += 3;
+        }
+      }
+
+      // 4. Prioritize technical explanations, documentation, code, and GitHub repos
+      if (isTechnicalQuery) {
+        const techTerms = [
+          'code', 'example', 'tutorial', 'library', 'framework', 'api', 'gui', 'ui',
+          'design', 'github', 'documentation', 'guide', 'package', 'module'
+        ];
+        for (const term of techTerms) {
+          if (fullText.includes(term)) {
+            score += 1;
           }
         }
 
-        // Drop results with zero keyword relevance if search terms exist
-        if (searchTerms.length > 0 && relevanceScore === 0) {
-          continue;
+        if (
+          item.url.includes('github.com') ||
+          item.url.includes('docs.') ||
+          item.url.includes('readthedocs.io') ||
+          item.url.includes('developer.')
+        ) {
+          score += 4;
         }
-
-        seenUrls.add(itemUrl);
-        scoredCandidates.push({
-          title,
-          url: itemUrl,
-          content,
-          domain,
-          isRootDomain,
-          relevanceScore,
-          contentLength: content.length,
-        });
       }
 
-      // 3. Rank results: Prioritize real articles over root homepages, higher relevance, and informative snippets
-      scoredCandidates.sort((a, b) => {
-        // Articles before root landing pages
-        if (a.isRootDomain !== b.isRootDomain) {
-          return a.isRootDomain ? 1 : -1;
-        }
-        // Higher relevance score
-        if (a.relevanceScore !== b.relevanceScore) {
-          return b.relevanceScore - a.relevanceScore;
-        }
-        // More descriptive snippet content
-        return b.contentLength - a.contentLength;
+      // Root domain penalty (homepages usually contain no specific article content)
+      if (isRootDomain) {
+        score -= 4;
+      }
+
+      validCandidates.push({
+        raw: item,
+        domain,
+        isRootDomain,
+        score,
       });
-
-      // 4. Return top formatted results
-      return scoredCandidates.slice(0, limit).map((c) => ({
-        title: c.title,
-        url: c.url,
-        content: c.content,
-        domain: c.domain,
-      }));
-    } catch (err: any) {
-      if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-        throw new Error('SearXNG search request timed out');
-      }
-      if (err.code === 'ECONNREFUSED' || err.message?.includes('fetch failed')) {
-        throw new Error('SearXNG search service is unreachable at ' + this.baseUrl);
-      }
-      throw err;
     }
+
+    if (validCandidates.length === 0) {
+      return [];
+    }
+
+    // Sort by relevance score descending
+    validCandidates.sort((a, b) => {
+      if (a.score !== b.score) {
+        return b.score - a.score;
+      }
+      return b.raw.content.length - a.raw.content.length;
+    });
+
+    // 5. Select the best 5–8 results (or available results if fewer than 5)
+    // If fewer than five valid results are available, pass available results.
+    // Do not fabricate results to fill the target count.
+    let selectedCount = validCandidates.length;
+    if (validCandidates.length >= 8) {
+      selectedCount = 8;
+    } else if (validCandidates.length >= 5) {
+      selectedCount = validCandidates.length; // between 5 and 7
+    } else {
+      selectedCount = validCandidates.length; // fewer than 5
+    }
+
+    const selectedSlice = validCandidates.slice(0, selectedCount);
+
+    return selectedSlice.map((candidate, idx) => ({
+      id: `S${idx + 1}`,
+      title: candidate.raw.title || candidate.domain || 'Web Document',
+      url: candidate.raw.url,
+      content: candidate.raw.content,
+      domain: candidate.domain,
+      publishedDate: candidate.raw.publishedDate,
+      engine: candidate.raw.engine,
+    }));
+  }
+
+  /**
+   * Convenience search method
+   */
+  async search(query: string, limit: number = 8): Promise<SourceReference[]> {
+    const raw10 = await this.fetchInitialResults(query, 10);
+    const processed = this.processAndRankResults(raw10, query);
+    return processed.slice(0, limit);
   }
 }
 

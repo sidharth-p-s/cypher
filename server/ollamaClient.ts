@@ -38,6 +38,92 @@ export class OllamaClient {
   }
 
   /**
+   * Stage One – Search Heading Generation
+   * Converts the original user request into a concise, effective search heading
+   */
+  async generateSearchHeading(model: string, userQuery: string): Promise<string> {
+    const systemInstruction = `You are a web search query generator.
+
+Your task is to understand the user's request and convert it into a concise, effective search heading that will produce relevant web search results.
+
+Rules:
+
+1. Understand the user's actual intent.
+2. Generate a natural-language search heading optimized for search engines.
+3. If the user has not specified a date or time period, include the word 'latest' naturally in the search heading.
+4. If the user explicitly mentions a date, preserve that exact date in the generated search heading.
+5. If the user mentions a date range, preserve the complete date range.
+6. If the user mentions a relative period such as yesterday, last week, last month or last year, preserve that time context.
+7. Never replace an explicitly requested historical date with 'latest'.
+8. Do not invent dates or time periods.
+9. Do not answer the user's original question.
+10. Return only the generated search heading. Do not include explanations, introductions, quotes, Markdown formatting or additional text.
+
+Examples:
+
+User: I want to build a beautiful Python program.
+
+Output: Latest beautiful Python application design ideas and modern UI frameworks.
+
+User: What happened on 24th October?
+
+Output: What happened on 24 October, major events and news.
+
+User: Find the latest NVIDIA GPU developments.
+
+Output: Latest NVIDIA GPU developments.
+
+User: Show me interesting technology developments from last week.
+
+Output: Latest technology news and developments from last week.`;
+
+    try {
+      const res = await fetch(`${this.baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: userQuery },
+          ],
+          think: false,
+          stream: false,
+          keep_alive: '10m',
+          options: {
+            temperature: 0.1,
+          },
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Ollama heading generation failed (${res.status}): ${errText || res.statusText}`);
+      }
+
+      const data = (await res.json()) as { message?: { content?: string } };
+      const rawContent = data.message?.content?.trim() || '';
+
+      // Clean up heading: take first line, strip quotes, markdown formatting, or labels
+      let heading = rawContent.split('\n')[0].trim();
+      heading = heading.replace(/^["'`*]+|["'`*]+$/g, '').trim();
+      heading = heading.replace(/^(Output|Search heading|Heading):\s*/i, '').trim();
+
+      if (!heading) {
+        throw new Error('Invalid search heading returned by Qwen.');
+      }
+
+      return heading;
+    } catch (err: any) {
+      if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+        throw new Error('Ollama request timed out while generating search heading.');
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Fast classification to decide if web search is needed, and extract contextual query
    */
   async classifySearch(model: string, messages: ChatMessagePayload[]): Promise<SearchDecision> {
