@@ -18,4 +18,14 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          katex: ['katex', 'rehype-katex', 'remark-math'],
+          icons: ['lucide-react'],
+        },
+      },
+    },
+  },
 });

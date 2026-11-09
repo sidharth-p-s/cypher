@@ -36,16 +36,43 @@ export const App: React.FC = () => {
     return DEFAULT_SETTINGS;
   });
 
-  // Sessions state
+  // Sessions state with automatic migration from legacy cypher_messages
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
     const saved = localStorage.getItem('cypher_sessions');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
       } catch {
-        return [];
+        // continue to migration
       }
     }
+
+    // Check for legacy messages to migrate
+    const legacyMessagesRaw = localStorage.getItem('cypher_messages');
+    if (legacyMessagesRaw) {
+      try {
+        const legacyMessages = JSON.parse(legacyMessagesRaw);
+        if (Array.isArray(legacyMessages) && legacyMessages.length > 0) {
+          const firstUserMsg = legacyMessages.find((m: Message) => m.role === 'user');
+          const title = firstUserMsg ? firstUserMsg.content.slice(0, 35) : 'Previous Conversation';
+          const migratedSession: ChatSession = {
+            id: `session_migrated_${Date.now()}`,
+            title,
+            messages: legacyMessages,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+          localStorage.removeItem('cypher_messages');
+          return [migratedSession];
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     return [];
   });
 
