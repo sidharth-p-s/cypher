@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Header } from './components/Header';
+import { Sidebar } from './components/Sidebar';
 import { ChatMessage } from './components/ChatMessage';
 import { ChatInput } from './components/ChatInput';
 import { EmptyState } from './components/EmptyState';
 import { SettingsModal } from './components/SettingsModal';
-import { Message, AppSettings, OllamaModelTag } from './types/chat';
+import { Message, AppSettings, OllamaModelTag, ChatSession } from './types/chat';
 import { OllamaService, StreamUpdate } from './services/ollama';
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -17,7 +18,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 export const App: React.FC = () => {
-  // App state
+  // App settings
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('cypher_settings');
     if (saved) {
@@ -26,7 +27,7 @@ export const App: React.FC = () => {
         return {
           ...DEFAULT_SETTINGS,
           ...parsed,
-          ollamaBaseUrl: '/api', // Ensure backend orchestrator is used
+          ollamaBaseUrl: '/api',
         };
       } catch {
         return DEFAULT_SETTINGS;
@@ -35,8 +36,9 @@ export const App: React.FC = () => {
     return DEFAULT_SETTINGS;
   });
 
-  const [messages, setMessages] = useState<Message[]>(() => {
-    const saved = localStorage.getItem('cypher_messages');
+  // Sessions state
+  const [sessions, setSessions] = useState<ChatSession[]>(() => {
+    const saved = localStorage.getItem('cypher_sessions');
     if (saved) {
       try {
         return JSON.parse(saved);
@@ -47,6 +49,13 @@ export const App: React.FC = () => {
     return [];
   });
 
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
+    return localStorage.getItem('cypher_active_session') || null;
+  });
+
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+
   const [models, setModels] = useState<OllamaModelTag[]>([]);
   const [isOnline, setIsOnline] = useState<boolean>(false);
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
@@ -55,17 +64,81 @@ export const App: React.FC = () => {
   const abortControllerRef = useRef<AbortController | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // Save settings to localStorage
+  // Sync active session messages on initial load or activeSessionId change
+  useEffect(() => {
+    if (activeSessionId) {
+      const current = sessions.find((s) => s.id === activeSessionId);
+      if (current) {
+        setMessages(current.messages);
+      } else {
+        setMessages([]);
+      }
+    } else if (sessions.length > 0) {
+      setActiveSessionId(sessions[0].id);
+      setMessages(sessions[0].messages);
+    } else {
+      setMessages([]);
+    }
+  }, [activeSessionId]);
+
+  // Persist sessions
+  useEffect(() => {
+    localStorage.setItem('cypher_sessions', JSON.stringify(sessions));
+  }, [sessions]);
+
+  // Persist active session ID
+  useEffect(() => {
+    if (activeSessionId) {
+      localStorage.setItem('cypher_active_session', activeSessionId);
+    } else {
+      localStorage.removeItem('cypher_active_session');
+    }
+  }, [activeSessionId]);
+
+  // Persist settings
   useEffect(() => {
     localStorage.setItem('cypher_settings', JSON.stringify(settings));
   }, [settings]);
 
-  // Save messages to localStorage (excluding streaming state)
-  useEffect(() => {
-    if (!isStreaming) {
-      localStorage.setItem('cypher_messages', JSON.stringify(messages));
-    }
-  }, [messages, isStreaming]);
+  // Update current session's messages in sessions list
+  const updateSessionMessages = useCallback((newMessages: Message[]) => {
+    setMessages(newMessages);
+
+    setSessions((prev) => {
+      if (!activeSessionId) {
+        // Create new session if none active
+        const newId = `session_${Date.now()}`;
+        setActiveSessionId(newId);
+        const title = newMessages[0]?.content.slice(0, 30) || 'New Conversation';
+        return [
+          {
+            id: newId,
+            title,
+            messages: newMessages,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+          ...prev,
+        ];
+      }
+
+      return prev.map((sess) => {
+        if (sess.id === activeSessionId) {
+          const firstUserMsg = newMessages.find((m) => m.role === 'user');
+          const title = sess.title === 'New Conversation' && firstUserMsg
+            ? firstUserMsg.content.slice(0, 35)
+            : sess.title;
+          return {
+            ...sess,
+            title,
+            messages: newMessages,
+            updatedAt: Date.now(),
+          };
+        }
+        return sess;
+      });
+    });
+  }, [activeSessionId]);
 
   // Scroll to bottom smoothly
   const scrollToBottom = useCallback((smooth = true) => {
@@ -111,9 +184,64 @@ export const App: React.FC = () => {
     scrollToBottom(true);
   }, [messages, isStreaming, scrollToBottom]);
 
+  // Create new session
+  const handleNewSession = () => {
+    if (isStreaming) {
+      handleStopStreaming();
+    }
+    const newId = `session_${Date.now()}`;
+    const newSession: ChatSession = {
+      id: newId,
+      title: 'New Conversation',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    setSessions((prev) => [newSession, ...prev]);
+    setActiveSessionId(newId);
+    setMessages([]);
+  };
+
+  // Select session
+  const handleSelectSession = (id: string) => {
+    if (isStreaming) {
+      handleStopStreaming();
+    }
+    setActiveSessionId(id);
+  };
+
+  // Delete session
+  const handleDeleteSession = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+    if (activeSessionId === id) {
+      const remaining = sessions.filter((s) => s.id !== id);
+      if (remaining.length > 0) {
+        setActiveSessionId(remaining[0].id);
+      } else {
+        setActiveSessionId(null);
+        setMessages([]);
+      }
+    }
+  };
+
   // Send message
   const handleSendMessage = async (text: string) => {
     if (!text.trim() || isStreaming) return;
+
+    let currentSessionId = activeSessionId;
+    if (!currentSessionId) {
+      currentSessionId = `session_${Date.now()}`;
+      const newSession: ChatSession = {
+        id: currentSessionId,
+        title: text.slice(0, 35),
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      setSessions((prev) => [newSession, ...prev]);
+      setActiveSessionId(currentSessionId);
+    }
 
     const userMessage: Message = {
       id: `usr_${Date.now()}`,
@@ -135,7 +263,7 @@ export const App: React.FC = () => {
     };
 
     const newMessages = [...messages, userMessage, initialAssistantMessage];
-    setMessages(newMessages);
+    updateSessionMessages(newMessages);
     setIsStreaming(true);
 
     const abortController = new AbortController();
@@ -143,7 +271,7 @@ export const App: React.FC = () => {
 
     try {
       const apiMessages = newMessages
-        .slice(0, -1) // omit the placeholder assistant message
+        .slice(0, -1) // omit placeholder assistant message
         .map((m) => ({
           role: m.role,
           content: m.content,
@@ -155,8 +283,8 @@ export const App: React.FC = () => {
         settings,
         signal: abortController.signal,
         onUpdate: (update: StreamUpdate) => {
-          setMessages((prev) =>
-            prev.map((msg) => {
+          setMessages((prev) => {
+            const updated = prev.map((msg) => {
               if (msg.id === assistantMessageId) {
                 return {
                   ...msg,
@@ -171,8 +299,17 @@ export const App: React.FC = () => {
                 };
               }
               return msg;
-            })
-          );
+            });
+
+            // If done, persist to sessions list
+            if (update.done) {
+              setSessions((all) =>
+                all.map((s) => (s.id === currentSessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s))
+              );
+            }
+
+            return updated;
+          });
         },
       });
     } catch (err: any) {
@@ -180,8 +317,8 @@ export const App: React.FC = () => {
         console.log('Stream generation aborted by user.');
       } else {
         console.error('Error generating response:', err);
-        setMessages((prev) =>
-          prev.map((msg) => {
+        setMessages((prev) => {
+          const updated = prev.map((msg) => {
             if (msg.id === assistantMessageId) {
               return {
                 ...msg,
@@ -194,8 +331,12 @@ export const App: React.FC = () => {
               };
             }
             return msg;
-          })
-        );
+          });
+          setSessions((all) =>
+            all.map((s) => (s.id === currentSessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s))
+          );
+          return updated;
+        });
       }
     } finally {
       setIsStreaming(false);
@@ -214,8 +355,10 @@ export const App: React.FC = () => {
     if (isStreaming) {
       handleStopStreaming();
     }
+    if (activeSessionId) {
+      setSessions((prev) => prev.map((s) => (s.id === activeSessionId ? { ...s, messages: [] } : s)));
+    }
     setMessages([]);
-    localStorage.removeItem('cypher_messages');
   };
 
   const handleUpdateSettings = (updates: Partial<AppSettings>) => {
@@ -223,56 +366,73 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-background overflow-hidden text-zinc-100 font-sans">
-      {/* Top Header */}
-      <Header
-        settings={settings}
-        onUpdateSettings={handleUpdateSettings}
-        models={models}
-        isOnline={isOnline}
-        onRefreshModels={checkStatusAndModels}
-        onClearChat={handleClearChat}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        isStreaming={isStreaming}
+    <div className="flex h-screen w-screen bg-background overflow-hidden text-zinc-100 font-sans">
+      {/* Collapsible Left Sidebar */}
+      <Sidebar
+        isOpen={isSidebarOpen}
+        onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={handleSelectSession}
+        onNewSession={handleNewSession}
+        onDeleteSession={handleDeleteSession}
+        modelName={settings.model}
       />
 
-      {/* Main Chat Stream Container */}
-      <main ref={scrollContainerRef} className="flex-1 overflow-y-auto flex flex-col">
-        {messages.length === 0 ? (
-          <EmptyState
-            modelName={settings.model}
-            enableThinking={settings.enableThinking}
-            enableWebSearch={settings.enableWebSearch}
-            onSelectPrompt={handleSendMessage}
-            isOnline={isOnline}
-          />
-        ) : (
-          <div className="flex-1 pb-4">
-            {messages.map((message) => (
-              <ChatMessage
-                key={message.id}
-                message={message}
-                modelName={settings.model}
-              />
-            ))}
-          </div>
-        )}
-      </main>
+      {/* Main Chat Interface */}
+      <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
+        {/* Top Header */}
+        <Header
+          settings={settings}
+          onUpdateSettings={handleUpdateSettings}
+          models={models}
+          isOnline={isOnline}
+          onRefreshModels={checkStatusAndModels}
+          onClearChat={handleClearChat}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          isStreaming={isStreaming}
+          isSidebarOpen={isSidebarOpen}
+          onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+        />
 
-      {/* Bottom Floating Chat Input */}
-      <ChatInput
-        onSendMessage={handleSendMessage}
-        isStreaming={isStreaming}
-        onStopStreaming={handleStopStreaming}
-        enableThinking={settings.enableThinking}
-        onToggleThinking={() =>
-          handleUpdateSettings({ enableThinking: !settings.enableThinking })
-        }
-        enableWebSearch={settings.enableWebSearch}
-        onToggleWebSearch={() =>
-          handleUpdateSettings({ enableWebSearch: !settings.enableWebSearch })
-        }
-      />
+        {/* Main Chat Stream Container */}
+        <main ref={scrollContainerRef} className="flex-1 overflow-y-auto flex flex-col">
+          {messages.length === 0 ? (
+            <EmptyState
+              modelName={settings.model}
+              enableThinking={settings.enableThinking}
+              enableWebSearch={settings.enableWebSearch}
+              onSelectPrompt={handleSendMessage}
+              isOnline={isOnline}
+            />
+          ) : (
+            <div className="flex-1 pb-4">
+              {messages.map((message) => (
+                <ChatMessage
+                  key={message.id}
+                  message={message}
+                  modelName={settings.model}
+                />
+              ))}
+            </div>
+          )}
+        </main>
+
+        {/* Bottom Floating Chat Input */}
+        <ChatInput
+          onSendMessage={handleSendMessage}
+          isStreaming={isStreaming}
+          onStopStreaming={handleStopStreaming}
+          enableThinking={settings.enableThinking}
+          onToggleThinking={() =>
+            handleUpdateSettings({ enableThinking: !settings.enableThinking })
+          }
+          enableWebSearch={settings.enableWebSearch}
+          onToggleWebSearch={() =>
+            handleUpdateSettings({ enableWebSearch: !settings.enableWebSearch })
+          }
+        />
+      </div>
 
       {/* Settings Modal */}
       <SettingsModal

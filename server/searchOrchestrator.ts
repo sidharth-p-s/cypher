@@ -48,8 +48,8 @@ export class SearchOrchestrator {
     }
 
     // Identify last user message
-    const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
-    if (!lastUserMessage || !lastUserMessage.content.trim()) {
+    const lastUserIdx = messages.map((m) => m.role).lastIndexOf('user');
+    if (lastUserIdx === -1 || !messages[lastUserIdx].content.trim()) {
       const preparedMessages = this.applySystemPrompt(messages, userSystemPrompt);
       return {
         messages: preparedMessages,
@@ -57,6 +57,8 @@ export class SearchOrchestrator {
         searchPerformed: false,
       };
     }
+
+    const lastUserMessage = messages[lastUserIdx];
 
     // Step 1: Decision - check if search is necessary
     onStatus('Checking if web search is needed...');
@@ -112,24 +114,25 @@ export class SearchOrchestrator {
       )
       .join('\n\n');
 
-    const searchContextBlock = `[LIVE WEB SEARCH CONTEXT]
-Query: "${query}"
-Date: ${currentDate}
+    // 1. Anti-refusal System Directive
+    const searchSystemDirective = `You are Cypher, an intelligent AI assistant equipped with real-time web search capabilities via SearXNG. You have access to real-time search results provided directly in the prompt. Synthesize a direct, well-structured, and factual answer using the retrieved sources. Cite your sources using inline reference tags like [1], [2] corresponding to the numbered sources. Never claim that you lack real-time access or internet access when search results are provided.`;
 
-${formattedSnippets}
-
-[INSTRUCTIONS]
-- Integrate relevant information from the web search results above to answer the user's inquiry accurately.
-- Use inline reference citations like [1], [2] corresponding to the sources above where appropriate.
-- Do not fabricate sources or URLs. Use only the provided links and facts.
-- If the search results do not contain the answer, state so honestly.`;
-
-    // Combine with system prompt or prepend
     const combinedSystemPrompt = userSystemPrompt
-      ? `${userSystemPrompt}\n\n${searchContextBlock}`
-      : searchContextBlock;
+      ? `${userSystemPrompt}\n\n${searchSystemDirective}`
+      : searchSystemDirective;
 
+    // Apply system prompt
     const augmentedMessages = this.applySystemPrompt(messages, combinedSystemPrompt);
+
+    // 2. Put search context directly in the user turn so instruction-tuned models like Qwen use it directly
+    const targetUserIdx = augmentedMessages.map((m) => m.role).lastIndexOf('user');
+    if (targetUserIdx !== -1) {
+      const originalUserText = augmentedMessages[targetUserIdx].content;
+      augmentedMessages[targetUserIdx] = {
+        role: 'user',
+        content: `Context from real-time web search for "${query}" (Date: ${currentDate}):\n\n${formattedSnippets}\n\nUser Question: ${originalUserText}`,
+      };
+    }
 
     return {
       messages: augmentedMessages,
@@ -155,4 +158,3 @@ ${formattedSnippets}
     return list;
   }
 }
-

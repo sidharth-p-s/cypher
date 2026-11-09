@@ -6,8 +6,8 @@ import {
   RotateCw, 
   Trash2, 
   Settings, 
-  CheckCircle2, 
-  AlertCircle 
+  AlertCircle,
+  PanelLeft
 } from 'lucide-react';
 import { AppSettings, OllamaModelTag } from '../types/chat';
 
@@ -20,6 +20,8 @@ interface HeaderProps {
   onClearChat: () => void;
   onOpenSettings: () => void;
   isStreaming: boolean;
+  isSidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -31,11 +33,23 @@ export const Header: React.FC<HeaderProps> = ({
   onClearChat,
   onOpenSettings,
   isStreaming,
+  isSidebarOpen,
+  onToggleSidebar,
 }) => {
   return (
     <header className="h-14 border-b border-border bg-surface-100/90 backdrop-blur-md px-4 flex items-center justify-between z-20 select-none">
       {/* Brand & Status */}
       <div className="flex items-center space-x-3">
+        {onToggleSidebar && (
+          <button
+            onClick={onToggleSidebar}
+            className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition"
+            title={isSidebarOpen ? 'Close sidebar' : 'Open chat history'}
+          >
+            <PanelLeft className="w-4 h-4" />
+          </button>
+        )}
+
         <div className="flex items-center space-x-2">
           <div className="w-7 h-7 rounded-lg bg-zinc-900 border border-zinc-700/60 flex items-center justify-center text-zinc-100 shadow-inner">
             <Cpu className="w-4 h-4 text-blue-400" />
