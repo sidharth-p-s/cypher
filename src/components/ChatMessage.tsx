@@ -231,6 +231,21 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, modelName }) 
                         <span className="truncate">{source.domain}</span>
                       </div>
                       <div className="flex items-center space-x-1.5 flex-shrink-0 text-[9px] text-zinc-500">
+                        {source.extractionStatus === 'success' && (
+                          <span className="px-1 py-0.2 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-800/40 font-mono">
+                            Extracted
+                          </span>
+                        )}
+                        {source.extractionStatus === 'unavailable' && (
+                          <span className="px-1 py-0.2 rounded bg-zinc-800/60 text-zinc-400 border border-zinc-700/40 font-mono">
+                            Unavailable
+                          </span>
+                        )}
+                        {source.extractionStatus === 'failed' && (
+                          <span className="px-1 py-0.2 rounded bg-amber-950/40 text-amber-400/80 border border-amber-900/40 font-mono">
+                            Failed
+                          </span>
+                        )}
                         {source.engine && (
                           <span className="px-1 py-0.2 rounded bg-zinc-800/80 uppercase tracking-wider">
                             {source.engine}

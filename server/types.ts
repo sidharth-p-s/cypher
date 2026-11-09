@@ -6,6 +6,8 @@ export interface SourceReference {
   domain: string;
   publishedDate?: string;
   engine?: string;
+  extractionStatus?: 'success' | 'unavailable' | 'failed';
+  extractedContent?: string;
 }
 
 export interface RawSearchResult {

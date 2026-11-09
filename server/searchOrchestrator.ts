@@ -1,6 +1,8 @@
 import { OllamaClient } from './ollamaClient';
 import { SearXNGClient } from './searxngClient';
 import { ChatMessagePayload, SourceReference } from './types';
+import { SEARCH_CONFIG } from './searchConfig';
+import { contentExtractor } from './contentExtractor';
 
 export interface OrchestrationResult {
   messages: ChatMessagePayload[];
@@ -31,9 +33,10 @@ export class SearchOrchestrator {
   }
 
   /**
-   * Two-Stage Intelligent Web Search Workflow:
+   * Two-Stage Intelligent Web Search Workflow with Webpage Content Extraction:
    * Stage One: Generate search heading from user request using Qwen
-   * Stage Two: Query local SearXNG API (retrieve 10 results, deduplicate, normalize, rank, select best 5-8)
+   * Stage Two: Query local SearXNG API (retrieve initial results, deduplicate, normalize, rank, select best results)
+   * Content Extraction: Fetch original webpages safely, extract readable content and code blocks with budget caps
    * Stage Three: Synthesize final answer using the dedicated web search prompt
    */
   async process({
@@ -91,12 +94,15 @@ export class SearchOrchestrator {
       throw new Error('Invalid search heading returned by Qwen.');
     }
 
-    // Stage Two: SearXNG Search (retrieve 10 results initially)
+    // Stage Two: SearXNG Search (retrieve initial results up to configured limit)
     onStatus('Searching the web...', searchHeading);
 
     let rawResults: any[] = [];
     try {
-      rawResults = await this.searxngClient.fetchInitialResults(searchHeading, 10);
+      rawResults = await this.searxngClient.fetchInitialResults(
+        searchHeading,
+        SEARCH_CONFIG.initialSearchResults
+      );
     } catch (searchErr: any) {
       // Never silently fall back to a fabricated web-search answer
       throw searchErr;
@@ -110,52 +116,88 @@ export class SearchOrchestrator {
 
     // Search Result Processing: deduplicate, normalize, rank, select best 5–8 results
     onStatus('Filtering and ranking results...', searchHeading);
-    const sources = this.searxngClient.processAndRankResults(rawResults, originalUserQuery, searchHeading);
+    const rankedSources = this.searxngClient.processAndRankResults(
+      rawResults,
+      originalUserQuery,
+      searchHeading
+    );
 
-    if (sources.length === 0) {
+    if (rankedSources.length === 0) {
       throw new Error(
         `No usable or relevant search results remained after filtering for "${searchHeading}".`
       );
     }
 
-    onStatus('Analyzing relevant sources...', searchHeading);
+    // Limit to configured maxSelectedSearchResults (8)
+    const selectedSources = rankedSources.slice(0, SEARCH_CONFIG.maxSelectedSearchResults);
 
-    // Format retrieved search results with [S1], [S2] identifiers
-    const formattedSearchResults = sources
+    // Webpage Content Extraction
+    onStatus('Extracting webpage content...', searchHeading);
+
+    const extractedSources = await contentExtractor.extractBatch(
+      selectedSources,
+      originalUserQuery,
+      searchHeading,
+      (completed, total) => {
+        onStatus(`Extracted content from ${completed} of ${total} webpages.`, searchHeading);
+      }
+    );
+
+    onStatus('Analyzing retrieved information...', searchHeading);
+
+    // Format retrieved search results and extracted webpage content with [S1], [S2] identifiers
+    const formattedSearchResults = extractedSources
       .map((src) => {
-        let meta = `[${src.id}] Title: ${src.title}\nDomain: ${src.domain}`;
-        if (src.publishedDate) meta += `\nPublished Date: ${src.publishedDate}`;
-        if (src.engine) meta += `\nEngine: ${src.engine}`;
-        return `${meta}\nExcerpt: ${src.content}`;
+        let text = `[${src.id}] Title: ${src.title}\nDomain: ${src.domain}\nURL: ${src.url}`;
+        if (src.publishedDate) text += `\nPublished Date: ${src.publishedDate}`;
+        if (src.engine) text += `\nEngine: ${src.engine}`;
+        text += `\nSearch Snippet: ${src.content}`;
+
+        if (src.extractionStatus === 'success' && src.extractedContent) {
+          text += `\nExtracted Webpage Content:\n${src.extractedContent}`;
+        } else if (src.extractionStatus === 'unavailable') {
+          text += `\nExtraction Status: Content extraction unavailable for this webpage.`;
+        } else if (src.extractionStatus === 'failed') {
+          text += `\nExtraction Status: Failed to fetch webpage content.`;
+        }
+
+        return text;
       })
-      .join('\n\n');
+      .join('\n\n---\n\n');
 
     // Stage Three: Final Answer Generation Instruction
-    const stageThreeInstruction = `You are an AI assistant answering a user using information retrieved from a live web search.
+    const stageThreeInstruction = `You are answering the user's original question using information retrieved from the web.
+
+Analyze the supplied search results and extracted webpage content.
+
+Prioritize actual technical explanations, useful code examples, implementation steps and relevant documentation.
+
+For programming requests, use the retrieved examples as references and inspiration to create an appropriate solution. Do not blindly copy code.
+
+Never invent facts, code attribution, URLs or publication dates.
+
+Use the supplied source identifiers when referencing information.
+
+If the extracted information is insufficient, acknowledge the limitation.
+
+Some sources may have extraction failures. Do not pretend to have read their full webpages.
 
 Original user request:
 ${originalUserQuery}
 
-Search heading:
+Generated search heading:
 ${searchHeading}
 
-Here are the actual results retrieved from the web:
+Retrieved Web Sources and Content:
+${formattedSearchResults}`;
 
-${formattedSearchResults}
+    // Context budget discipline: avoid sending overly deep past turns alongside extracted webpage content
+    let messagesToAugment = messages;
+    if (messages.length > 5) {
+      messagesToAugment = messages.slice(-5);
+    }
 
-Instructions:
-
-1. Understand and answer the user's original question.
-2. Analyze the retrieved information rather than merely summarizing search snippets.
-3. Use relevant examples, techniques, ideas and code from the retrieved results.
-4. When the user asks to build or implement something, use the retrieved information as inspiration and produce your own useful implementation.
-5. Do not blindly copy code. Explain and adapt it where appropriate.
-6. Never invent facts, URLs, publication dates or sources.
-7. If the retrieved information is insufficient, explicitly acknowledge the limitation.
-8. Do not claim to have searched for information that was not included in the supplied results.
-9. Reference sources using identifiers supplied by the application.`;
-
-    const augmentedMessages = this.applySystemPrompt(messages, stageThreeInstruction);
+    const augmentedMessages = this.applySystemPrompt(messagesToAugment, stageThreeInstruction);
 
     // Ensure the last user message turn contains the original user question
     const targetUserIdx = augmentedMessages.map((m) => m.role).lastIndexOf('user');
@@ -170,7 +212,7 @@ Instructions:
 
     return {
       messages: augmentedMessages,
-      sources,
+      sources: extractedSources,
       searchPerformed: true,
       searchHeading,
     };
