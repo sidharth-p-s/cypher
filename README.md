@@ -12,30 +12,30 @@ Cypher combines local model inference with private, privacy-respecting metasearc
 
 ```mermaid
 flowchart TD
-    User([User Query]) --> CheckSearch{Web Search Enabled?}
+    User(["User Query"]) --> CheckSearch{"Web Search Enabled?"}
     
     %% Direct Path
-    CheckSearch -- No --> OllamaDirect[Direct Ollama Query /api/chat]
-    OllamaDirect --> StreamAnswer[Stream Final Answer]
+    CheckSearch -- "No" --> OllamaDirect["Direct Ollama Query /api/chat"]
+    OllamaDirect --> StreamAnswer["Stream Final Answer"]
 
     %% Web Search Pipeline
-    CheckSearch -- Yes --> Stage1[Stage 1: Qwen Heading Generation<br/>Date-aware search query]
-    Stage1 --> Stage2[Stage 2: SearXNG Search Query<br/>Retrieve up to 10 results]
-    Stage2 --> FilterRank[Deduplication & Relevance Ranking<br/>Select best 5–8 results]
-    FilterRank --> Extractor[Webpage Content Extractor<br/>Pool Concurrency: 3 | SSRF Guard]
+    CheckSearch -- "Yes" --> Stage1["Stage 1: Qwen Heading Generation<br/>Date-aware search query"]
+    Stage1 --> Stage2["Stage 2: SearXNG Search Query<br/>Retrieve up to 10 results"]
+    Stage2 --> FilterRank["Deduplication & Relevance Ranking<br/>Select best 5–8 results"]
+    FilterRank --> Extractor["Webpage Content Extractor<br/>Pool Concurrency: 3 - SSRF Guard"]
     
-    subgraph ExtractionStage [Content Extraction & Normalization]
+    subgraph ExtractionStage ["Content Extraction & Normalization"]
         direction TB
-        SSRF[SSRF & Security Validation] --> SafeFetch[Safe HTTP Fetch / Size Limit 2MB]
-        SafeFetch --> Parser[Mozilla Readability + LinkeDOM]
-        SafeFetch --> GitHub[GitHub Raw README Extraction]
-        Parser --> Scoring[Deterministic Section Scoring & Budgeting]
+        SSRF["SSRF & Security Validation"] --> SafeFetch["Safe HTTP Fetch / Size Limit 2MB"]
+        SafeFetch --> Parser["Mozilla Readability + LinkeDOM"]
+        SafeFetch --> GitHub["GitHub Raw README Extraction"]
+        Parser --> Scoring["Deterministic Section Scoring & Budgeting"]
         GitHub --> Scoring
     end
     
     Extractor --> ExtractionStage
-    Scoring --> Stage3Prompt[Stage 3: Augmented Prompt Synthesis<br/>Retrieved excerpts, code blocks, source IDs]
-    Stage3Prompt --> QwenStage3[Qwen 3.5 9B Answer Generation]
+    Scoring --> Stage3Prompt["Stage 3: Augmented Prompt Synthesis<br/>Retrieved excerpts, code blocks, source IDs"]
+    Stage3Prompt --> QwenStage3["Qwen 3.5 9B Answer Generation"]
     QwenStage3 --> StreamAnswer
 ```
 
