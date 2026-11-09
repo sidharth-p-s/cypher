@@ -22,7 +22,12 @@ export const App: React.FC = () => {
     const saved = localStorage.getItem('cypher_settings');
     if (saved) {
       try {
-        return { ...DEFAULT_SETTINGS, ...JSON.parse(saved) };
+        const parsed = JSON.parse(saved);
+        return {
+          ...DEFAULT_SETTINGS,
+          ...parsed,
+          ollamaBaseUrl: '/api', // Ensure backend orchestrator is used
+        };
       } catch {
         return DEFAULT_SETTINGS;
       }

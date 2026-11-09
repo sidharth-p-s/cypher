@@ -17,7 +17,8 @@ export class OllamaService {
    */
   static async getModels(baseUrl: string = '/api'): Promise<OllamaModelTag[]> {
     try {
-      const url = `${baseUrl}/tags`;
+      const resolvedBase = !baseUrl || baseUrl === '/ollama-api' ? '/api' : baseUrl;
+      const url = `${resolvedBase}/tags`;
       const res = await fetch(url, { method: 'GET' });
       if (!res.ok) {
         throw new Error(`HTTP error ${res.status}: ${res.statusText}`);
@@ -35,12 +36,13 @@ export class OllamaService {
    */
   static async checkHealth(baseUrl: string = '/api'): Promise<boolean> {
     try {
+      const resolvedBase = !baseUrl || baseUrl === '/ollama-api' ? '/api' : baseUrl;
       // Try /api/health first, then /tags
-      const healthUrl = `${baseUrl}/health`;
+      const healthUrl = `${resolvedBase}/health`;
       const res = await fetch(healthUrl, { method: 'GET', signal: AbortSignal.timeout(3000) });
       if (res.ok) return true;
 
-      const tagsUrl = `${baseUrl}/tags`;
+      const tagsUrl = `${resolvedBase}/tags`;
       const tagsRes = await fetch(tagsUrl, { method: 'GET', signal: AbortSignal.timeout(3000) });
       return tagsRes.ok;
     } catch {
@@ -64,7 +66,8 @@ export class OllamaService {
     onUpdate: (update: StreamUpdate) => void;
     signal?: AbortSignal;
   }): Promise<void> {
-    const chatUrl = `${baseUrl}/chat`;
+    const resolvedBase = !baseUrl || baseUrl === '/ollama-api' ? '/api' : baseUrl;
+    const chatUrl = `${resolvedBase}/chat`;
 
     const response = await fetch(chatUrl, {
       method: 'POST',

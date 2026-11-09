@@ -12,7 +12,7 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/ollama-api': {
-        target: 'http://127.0.0.1:11434',
+        target: 'http://127.0.0.1:3001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/ollama-api/, '/api'),
       },

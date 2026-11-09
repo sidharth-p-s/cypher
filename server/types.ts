@@ -23,3 +23,4 @@ export interface SearchDecision {
   needSearch: boolean;
   query: string;
 }
+
