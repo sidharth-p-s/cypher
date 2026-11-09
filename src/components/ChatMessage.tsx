@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { Copy, Check, Terminal, User, Bot, Clock, Zap } from 'lucide-react';
 import { Message } from '../types/chat';
 import { ThoughtBlock } from './ThoughtBlock';
@@ -74,7 +76,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, modelName }) 
           <div className="markdown-body text-zinc-200 text-sm leading-relaxed overflow-hidden">
             {message.content ? (
               <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
                 components={{
                   code({ node, inline, className, children, ...props }: any) {
                     const match = /language-(\w+)/.exec(className || '');
@@ -145,3 +148,4 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, modelName }) 
     </div>
   );
 };
+

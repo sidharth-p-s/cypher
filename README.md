@@ -57,3 +57,4 @@ http://localhost:5173
 - **Frontend**: React 18, TypeScript, Vite
 - **Styling**: Tailwind CSS, Lucide Icons, Custom Markdown Theme
 - **Backend / Engine**: Ollama REST API (`/api/chat`, `/api/tags`) with HTTP streaming (NDJSON)
+

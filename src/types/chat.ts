@@ -36,3 +36,4 @@ export interface AppSettings {
   temperature: number;
   ollamaBaseUrl: string;
 }
+

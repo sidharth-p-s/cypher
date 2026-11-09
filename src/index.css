@@ -1,3 +1,4 @@
+@import "katex/dist/katex.min.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -116,3 +117,4 @@
   background-color: #121418;
   font-weight: 600;
 }
+

@@ -61,21 +61,13 @@ export class OllamaService {
     // Prepare system messages and conversation history
     const payloadMessages = [...messages];
 
-    let systemContent = settings.systemPrompt?.trim() || '';
-    if (settings.enableThinking) {
-      const thinkInstruction = 'You are in deep reasoning mode. Provide a meticulous, thorough step-by-step analysis and reasoning process before answering.';
-      systemContent = systemContent ? `${systemContent}\n\n${thinkInstruction}` : thinkInstruction;
-    } else {
-      const directInstruction = 'Be direct, clear, and concise. Provide the final response directly without verbose reasoning traces.';
-      systemContent = systemContent ? `${systemContent}\n\n${directInstruction}` : directInstruction;
-    }
-
-    if (systemContent) {
+    const userSystemPrompt = settings.systemPrompt?.trim();
+    if (userSystemPrompt) {
       const existingSysIdx = payloadMessages.findIndex((m) => m.role === 'system');
       if (existingSysIdx >= 0) {
-        payloadMessages[existingSysIdx] = { role: 'system', content: systemContent };
+        payloadMessages[existingSysIdx] = { role: 'system', content: userSystemPrompt };
       } else {
-        payloadMessages.unshift({ role: 'system', content: systemContent });
+        payloadMessages.unshift({ role: 'system', content: userSystemPrompt });
       }
     }
 
@@ -88,6 +80,8 @@ export class OllamaService {
         model: settings.model,
         messages: payloadMessages,
         stream: true,
+        think: settings.enableThinking,
+        keep_alive: '10m',
         options: {
           temperature: settings.temperature,
         },

@@ -78,3 +78,4 @@ export const ThoughtBlock: React.FC<ThoughtBlockProps> = ({ thinking, isActive }
     </div>
   );
 };
+
