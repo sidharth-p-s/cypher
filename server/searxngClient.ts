@@ -1,4 +1,4 @@
-import { RawSearchResult, SourceReference } from './types';
+import { ProcessedSearchResult, RawSearchResult, SearchProcessingMetrics, SourceReference } from './types';
 
 export class SearXNGClient {
   private baseUrl: string;
@@ -159,49 +159,94 @@ export class SearXNGClient {
    * Stage Two Result Processing:
    * 1. Remove duplicate URLs (with URL normalization).
    * 2. Remove empty or unusable results.
-   * 3. Rank remaining results based on relevance to original user request.
-   * 4. Prioritize technical explanations, implementation examples, code snippets, documentation, GitHub repos.
-   * 5. Select the best 5–8 results (or available results if fewer than 5).
+   * 3. Evaluate results against both original query AND generated search heading.
+   * 4. Enforce a minimum relevance threshold against core subject terms (penalizing matches solely on "latest").
+   * 5. Prioritize technical documentation, GitHub repositories, developer blogs, tutorials, working code.
+   * 6. Penalize generic news portals and landing pages.
+   * 7. Select up to 8 max, preferring 4 highly relevant results without forcing 5-8 count.
    */
-  processAndRankResults(
+  processAndRankResultsDetailed(
     rawResults: RawSearchResult[],
-    originalUserQuery: string
-  ): SourceReference[] {
+    originalUserQuery: string,
+    searchHeading?: string
+  ): ProcessedSearchResult {
+    const originalCount = rawResults ? rawResults.length : 0;
     if (!rawResults || rawResults.length === 0) {
-      return [];
+      return {
+        sources: [],
+        metrics: {
+          originalCount: 0,
+          duplicatesRemoved: 0,
+          rejectedIrrelevant: 0,
+          finalSelectedCount: 0,
+        },
+      };
     }
 
-    const stopwords = new Set([
+    // Modifiers and generic filler words that should not qualify a result on their own
+    const stopwordsAndModifiers = new Set([
       'the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of',
-      'with', 'and', 'or', 'about', 'latest', 'news', 'update', 'updates', 'today', 'get',
-      'what', 'when', 'where', 'who', 'why', 'how', 'did', 'does', 'do', 'i', 'you', 'he',
-      'she', 'it', 'want', 'build', 'show', 'me', 'find', 'give', 'can'
+      'with', 'and', 'or', 'about', 'latest', 'recent', 'today', 'new', 'news', 'update', 'updates',
+      'breaking', 'top', 'best', 'current', 'developments', 'what', 'happened', 'happend', 'find',
+      'show', 'want', 'build', 'make', 'create', 'how', 'when', 'where', 'who', 'why', 'did', 'does',
+      'do', 'between', 'from', 'last', 'week', 'month', 'year', 'ideas', 'projects', 'major', 'events',
+      'which', 'can', 'give', 'me', 'i', 'you', 'he', 'she', 'it'
     ]);
 
-    const queryKeywords = originalUserQuery
-      .toLowerCase()
+    // Extract core subject keywords from BOTH the original query and generated heading
+    const combinedQueryText = `${originalUserQuery} ${searchHeading || ''}`.toLowerCase();
+    const rawTokens = combinedQueryText
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
-      .filter((t) => t.length > 2 && !stopwords.has(t));
+      .filter((t) => t.length > 1);
+
+    const coreKeywords = Array.from(new Set(rawTokens.filter((t) => !stopwordsAndModifiers.has(t))));
+
+    // Generic news aggregators and tabloids to penalize/discard on non-general-news queries
+    const genericNewsDomains = new Set([
+      'ndtv.com',
+      'timesofindia.com',
+      'm.timesofindia.com',
+      'hindustantimes.com',
+      'm.hindustantimes.com',
+      'eenadu.net',
+      'news.google.com',
+      'indiatimes.com',
+      'dailymail.co.uk',
+      'thesun.co.uk',
+    ]);
+
+    // Grammar/dictionary sites that falsely match words like "happened"
+    const grammarDomains = new Set([
+      'twominenglish.com',
+      'dictionary.cambridge.org',
+      'grammrify.com',
+      'grammarmax.com',
+    ]);
 
     const isTechnicalQuery =
-      /\b(code|python|program|app|application|framework|library|gui|ui|api|github|install|script|build|develop|example|tutorial|function|class)\b/i.test(
-        originalUserQuery
+      /\b(code|python|program|app|application|framework|library|gui|ui|api|github|install|script|build|develop|example|tutorial|terminal|cli|gpu|nvidia|hardware|driver)\b/i.test(
+        combinedQueryText
       );
 
     const seenNormalizedUrls = new Set<string>();
-    interface ScoredItem {
+    let duplicatesRemoved = 0;
+    let rejectedIrrelevant = 0;
+
+    interface ScoredCandidate {
       raw: RawSearchResult;
       domain: string;
       isRootDomain: boolean;
       score: number;
+      coreMatchCount: number;
     }
 
-    const validCandidates: ScoredItem[] = [];
+    const scoredCandidates: ScoredCandidate[] = [];
 
     for (const item of rawResults) {
       // 1. Remove empty or unusable results
       if (!item.url || (!item.title && !item.content)) {
+        rejectedIrrelevant++;
         continue;
       }
 
@@ -209,95 +254,139 @@ export class SearXNGClient {
       try {
         parsedUrl = new URL(item.url);
       } catch {
+        rejectedIrrelevant++;
         continue; // Unusable / invalid URL
       }
 
       // 2. Normalize URL and remove duplicates
       const normalized = this.normalizeUrl(item.url);
       if (seenNormalizedUrls.has(normalized)) {
+        duplicatesRemoved++;
         continue;
       }
       seenNormalizedUrls.add(normalized);
 
       const domain = parsedUrl.hostname.replace(/^www\./, '') || 'web';
+      const pathname = parsedUrl.pathname.toLowerCase();
       const isRootDomain =
-        !parsedUrl.pathname || parsedUrl.pathname === '/' || parsedUrl.pathname === '/index.html';
+        !pathname || pathname === '/' || pathname === '/index.html' || pathname === '/news' || pathname === '/latest';
 
-      const fullText = `${item.title} ${item.content}`.toLowerCase();
+      const titleLower = item.title.toLowerCase();
+      const contentLower = item.content.toLowerCase();
 
-      // 3. Rank based on relevance to original user request
+      // 3. Evaluate Core Keyword Matches (Must match at least one substantive core topic term)
+      let coreMatchCount = 0;
       let score = 0;
-      for (const kw of queryKeywords) {
-        if (fullText.includes(kw)) {
-          score += 2;
-        }
-        if (item.title.toLowerCase().includes(kw)) {
-          score += 3;
-        }
-      }
 
-      // 4. Prioritize technical explanations, documentation, code, and GitHub repos
-      if (isTechnicalQuery) {
-        const techTerms = [
-          'code', 'example', 'tutorial', 'library', 'framework', 'api', 'gui', 'ui',
-          'design', 'github', 'documentation', 'guide', 'package', 'module'
-        ];
-        for (const term of techTerms) {
-          if (fullText.includes(term)) {
-            score += 1;
-          }
-        }
-
-        if (
-          item.url.includes('github.com') ||
-          item.url.includes('docs.') ||
-          item.url.includes('readthedocs.io') ||
-          item.url.includes('developer.')
-        ) {
+      for (const kw of coreKeywords) {
+        let matched = false;
+        if (titleLower.includes(kw)) {
           score += 4;
+          matched = true;
+        }
+        if (pathname.includes(kw)) {
+          score += 3;
+          matched = true;
+        }
+        if (contentLower.includes(kw)) {
+          score += 2;
+          matched = true;
+        }
+        if (matched) {
+          coreMatchCount++;
         }
       }
 
-      // Root domain penalty (homepages usually contain no specific article content)
-      if (isRootDomain) {
-        score -= 4;
+      // If the result matched NONE of the core keywords (e.g. matched ONLY "latest" or "news"), discard it!
+      if (coreKeywords.length > 0 && coreMatchCount === 0) {
+        rejectedIrrelevant++;
+        continue;
       }
 
-      validCandidates.push({
+      // 4. Quality, Authority & Technical Weighting
+      const isOfficialDocs =
+        domain.startsWith('docs.') ||
+        domain.endsWith('.readthedocs.io') ||
+        domain === 'python.org' ||
+        domain.startsWith('developer.') ||
+        domain.includes('nvidia.com') ||
+        domain === 'history.com' ||
+        domain === 'britannica.com' ||
+        domain === 'timeanddate.com';
+      if (isOfficialDocs) score += 5;
+
+      const isGithub = domain === 'github.com' || domain === 'gitlab.com';
+      if (isGithub) score += 5;
+
+      const isTechBlog =
+        domain === 'geeksforgeeks.org' ||
+        domain === 'pythonguis.com' ||
+        domain === 'realpython.com' ||
+        domain === 'openpython.org' ||
+        domain === 'reflex.dev' ||
+        domain === 'codedex.io' ||
+        domain === 'libhunt.com' ||
+        domain === 'pcmag.com' ||
+        domain === 'buildideas.co' ||
+        domain === 'onthisday.com' ||
+        domain === 'letsdatascience.com';
+      if (isTechBlog) score += 4;
+
+      const isDiscussion = domain.includes('reddit.com') || domain === 'stackoverflow.com';
+      if (isDiscussion) score += 3;
+
+      // Working code signals
+      if (
+        /\b(pip install|import |def |class |github\.com|bash|npm |const |function |git clone)\b/i.test(
+          item.content
+        )
+      ) {
+        score += 2;
+      }
+
+      // 5. Penalties for unrelated sites, generic news portals, and root landing pages
+      if (genericNewsDomains.has(domain)) {
+        score -= 8;
+      }
+      if (grammarDomains.has(domain)) {
+        score -= 8;
+      }
+      if (isRootDomain) {
+        score -= 6;
+      }
+      if (item.content.length < 30) {
+        score -= 3;
+      }
+
+      // 6. Minimum Relevance Threshold (score must be at least 5)
+      const MIN_RELEVANCE_SCORE = 5;
+      if (score < MIN_RELEVANCE_SCORE) {
+        rejectedIrrelevant++;
+        continue;
+      }
+
+      scoredCandidates.push({
         raw: item,
         domain,
         isRootDomain,
         score,
+        coreMatchCount,
       });
     }
 
-    if (validCandidates.length === 0) {
-      return [];
-    }
-
     // Sort by relevance score descending
-    validCandidates.sort((a, b) => {
+    scoredCandidates.sort((a, b) => {
       if (a.score !== b.score) {
         return b.score - a.score;
       }
       return b.raw.content.length - a.raw.content.length;
     });
 
-    // 5. Select the best 5–8 results (or available results if fewer than 5)
-    // If fewer than five valid results are available, pass available results.
-    // Do not fabricate results to fill the target count.
-    let selectedCount = validCandidates.length;
-    if (validCandidates.length >= 8) {
-      selectedCount = 8;
-    } else if (validCandidates.length >= 5) {
-      selectedCount = validCandidates.length; // between 5 and 7
-    } else {
-      selectedCount = validCandidates.length; // fewer than 5
-    }
+    // 7. Select final results: prefer 4 highly relevant results over 8 mixed-quality results.
+    // Do not force 5-8 if fewer pass. Maximum cap is 8.
+    const selectedSlice = scoredCandidates.slice(0, 8);
 
-    const selectedSlice = validCandidates.slice(0, selectedCount);
-
-    return selectedSlice.map((candidate, idx) => ({
+    const sources: SourceReference[] = selectedSlice.map((candidate, idx) => ({
       id: `S${idx + 1}`,
       title: candidate.raw.title || candidate.domain || 'Web Document',
       url: candidate.raw.url,
@@ -306,6 +395,28 @@ export class SearXNGClient {
       publishedDate: candidate.raw.publishedDate,
       engine: candidate.raw.engine,
     }));
+
+    return {
+      sources,
+      metrics: {
+        originalCount,
+        duplicatesRemoved,
+        rejectedIrrelevant,
+        finalSelectedCount: sources.length,
+      },
+    };
+  }
+
+  /**
+   * Convenience wrapper returning only sources
+   */
+  processAndRankResults(
+    rawResults: RawSearchResult[],
+    originalUserQuery: string,
+    searchHeading?: string
+  ): SourceReference[] {
+    const result = this.processAndRankResultsDetailed(rawResults, originalUserQuery, searchHeading);
+    return result.sources;
   }
 
   /**

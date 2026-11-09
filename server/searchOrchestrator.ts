@@ -110,7 +110,7 @@ export class SearchOrchestrator {
 
     // Search Result Processing: deduplicate, normalize, rank, select best 5–8 results
     onStatus('Filtering and ranking results...', searchHeading);
-    const sources = this.searxngClient.processAndRankResults(rawResults, originalUserQuery);
+    const sources = this.searxngClient.processAndRankResults(rawResults, originalUserQuery, searchHeading);
 
     if (sources.length === 0) {
       throw new Error(

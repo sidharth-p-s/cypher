@@ -16,6 +16,18 @@ export interface RawSearchResult {
   engine?: string;
 }
 
+export interface SearchProcessingMetrics {
+  originalCount: number;
+  duplicatesRemoved: number;
+  rejectedIrrelevant: number;
+  finalSelectedCount: number;
+}
+
+export interface ProcessedSearchResult {
+  sources: SourceReference[];
+  metrics: SearchProcessingMetrics;
+}
+
 export interface ChatMessagePayload {
   role: 'user' | 'assistant' | 'system';
   content: string;
