@@ -12,6 +12,13 @@ export interface OrchestrationResult {
 
 export type StatusCallback = (status: string, query?: string) => void;
 
+const BASE_SYSTEM_DIRECTIVE = `You are Cypher, an intelligent local AI assistant.
+Memory & Consistency Guidelines:
+- Maintain full consistency with the ongoing conversation history.
+- Earlier messages in this conversation may contain factual news, real-world events, and data retrieved via live web search.
+- Treat facts and events established in earlier turns of this conversation as verified ground truth.
+- Never claim prior verified conversation turns were "hallucinations" or "errors in simulation" simply because they describe events after your pre-training cutoff or because web search is inactive on the current turn.`;
+
 export class SearchOrchestrator {
   private ollamaClient: OllamaClient;
   private searxngClient: SearXNGClient;
@@ -37,9 +44,13 @@ export class SearchOrchestrator {
     userSystemPrompt?: string;
     onStatus: StatusCallback;
   }): Promise<OrchestrationResult> {
-    // If web search is disabled, proceed directly
+    const basePrompt = userSystemPrompt
+      ? `${userSystemPrompt}\n\n${BASE_SYSTEM_DIRECTIVE}`
+      : BASE_SYSTEM_DIRECTIVE;
+
+    // If web search is disabled, proceed directly with memory grounding
     if (!enableWebSearch) {
-      const preparedMessages = this.applySystemPrompt(messages, userSystemPrompt);
+      const preparedMessages = this.applySystemPrompt(messages, basePrompt);
       return {
         messages: preparedMessages,
         sources: [],
@@ -50,7 +61,7 @@ export class SearchOrchestrator {
     // Identify last user message
     const lastUserIdx = messages.map((m) => m.role).lastIndexOf('user');
     if (lastUserIdx === -1 || !messages[lastUserIdx].content.trim()) {
-      const preparedMessages = this.applySystemPrompt(messages, userSystemPrompt);
+      const preparedMessages = this.applySystemPrompt(messages, basePrompt);
       return {
         messages: preparedMessages,
         sources: [],
@@ -66,7 +77,7 @@ export class SearchOrchestrator {
 
     if (!decision.needSearch || !decision.query) {
       // Model decided search is not needed for this query
-      const preparedMessages = this.applySystemPrompt(messages, userSystemPrompt);
+      const preparedMessages = this.applySystemPrompt(messages, basePrompt);
       return {
         messages: preparedMessages,
         sources: [],
@@ -93,7 +104,7 @@ export class SearchOrchestrator {
       if (!searchError) {
         onStatus(`No search results found for "${query}". Answering with model knowledge...`, query);
       }
-      const preparedMessages = this.applySystemPrompt(messages, userSystemPrompt);
+      const preparedMessages = this.applySystemPrompt(messages, basePrompt);
       return {
         messages: preparedMessages,
         sources: [],
@@ -115,14 +126,16 @@ export class SearchOrchestrator {
       .join('\n\n');
 
     // 1. Anti-refusal System Directive
-    const searchSystemDirective = `You are Cypher, an intelligent AI assistant equipped with real-time web search capabilities via SearXNG. You have access to real-time search results provided directly in the prompt. Synthesize a direct, well-structured, and factual answer using the retrieved sources. Cite your sources using inline reference tags like [1], [2] corresponding to the numbered sources. Never claim that you lack real-time access or internet access when search results are provided.`;
+    const searchSystemDirective = `${basePrompt}
 
-    const combinedSystemPrompt = userSystemPrompt
-      ? `${userSystemPrompt}\n\n${searchSystemDirective}`
-      : searchSystemDirective;
+Search Guidelines:
+- You have access to real-time search results provided directly with the user prompt.
+- Synthesize a direct, well-structured, and factual answer using the retrieved sources.
+- Cite your sources using inline reference tags like [1], [2] corresponding to the numbered sources.
+- Never claim that you lack real-time access or internet access when search results are provided.`;
 
     // Apply system prompt
-    const augmentedMessages = this.applySystemPrompt(messages, combinedSystemPrompt);
+    const augmentedMessages = this.applySystemPrompt(messages, searchSystemDirective);
 
     // 2. Put search context directly in the user turn so instruction-tuned models like Qwen use it directly
     const targetUserIdx = augmentedMessages.map((m) => m.role).lastIndexOf('user');
