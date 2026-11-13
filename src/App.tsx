@@ -7,6 +7,7 @@ import { EmptyState } from './components/EmptyState';
 import { SettingsModal } from './components/SettingsModal';
 import { Message, AppSettings, OllamaModelTag, ChatSession } from './types/chat';
 import { OllamaService, StreamUpdate } from './services/ollama';
+import { ConversationService } from './services/conversationService';
 
 const DEFAULT_SETTINGS: AppSettings = {
   model: 'qwen3.5:9b',
@@ -36,45 +37,8 @@ export const App: React.FC = () => {
     return DEFAULT_SETTINGS;
   });
 
-  // Sessions state with automatic migration from legacy cypher_messages
-  const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('cypher_sessions');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      } catch {
-        // continue to migration
-      }
-    }
-
-    // Check for legacy messages to migrate
-    const legacyMessagesRaw = localStorage.getItem('cypher_messages');
-    if (legacyMessagesRaw) {
-      try {
-        const legacyMessages = JSON.parse(legacyMessagesRaw);
-        if (Array.isArray(legacyMessages) && legacyMessages.length > 0) {
-          const firstUserMsg = legacyMessages.find((m: Message) => m.role === 'user');
-          const title = firstUserMsg ? firstUserMsg.content.slice(0, 35) : 'Previous Conversation';
-          const migratedSession: ChatSession = {
-            id: `session_migrated_${Date.now()}`,
-            title,
-            messages: legacyMessages,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          };
-          localStorage.removeItem('cypher_messages');
-          return [migratedSession];
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    return [];
-  });
+  // Conversations list loaded from SQLite backend
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
     return localStorage.getItem('cypher_active_session') || null;
@@ -91,26 +55,99 @@ export const App: React.FC = () => {
   const abortControllerRef = useRef<AbortController | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // Sync active session messages on initial load or activeSessionId change
+  // Initial load: migrate legacy sessions once (if needed) & fetch conversations from SQLite
   useEffect(() => {
-    if (activeSessionId) {
-      const current = sessions.find((s) => s.id === activeSessionId);
-      if (current) {
-        setMessages(current.messages);
-      } else {
-        setMessages([]);
+    let isMounted = true;
+
+    async function initStorage() {
+      try {
+        const migrated = localStorage.getItem('cypher_db_migrated');
+        if (migrated !== 'true') {
+          // Check for legacy sessions in localStorage
+          let legacySessions: ChatSession[] = [];
+          const savedSessions = localStorage.getItem('cypher_sessions');
+          if (savedSessions) {
+            try {
+              const parsed = JSON.parse(savedSessions);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                legacySessions = parsed;
+              }
+            } catch (e) {
+              console.error('Failed to parse cypher_sessions for migration:', e);
+            }
+          }
+
+          // Also check legacy cypher_messages if cypher_sessions was empty
+          if (legacySessions.length === 0) {
+            const savedMessages = localStorage.getItem('cypher_messages');
+            if (savedMessages) {
+              try {
+                const parsedMsgs = JSON.parse(savedMessages);
+                if (Array.isArray(parsedMsgs) && parsedMsgs.length > 0) {
+                  const firstUserMsg = parsedMsgs.find((m: Message) => m.role === 'user');
+                  const title = firstUserMsg ? firstUserMsg.content.slice(0, 35) : 'Previous Conversation';
+                  legacySessions = [
+                    {
+                      id: `session_migrated_${Date.now()}`,
+                      title,
+                      messages: parsedMsgs,
+                      createdAt: Date.now(),
+                      updatedAt: Date.now(),
+                    },
+                  ];
+                }
+              } catch (e) {
+                console.error('Failed to parse cypher_messages for migration:', e);
+              }
+            }
+          }
+
+          if (legacySessions.length > 0) {
+            console.log(`Migrating ${legacySessions.length} legacy sessions to SQLite...`);
+            const res = await ConversationService.migrateLegacySessions(legacySessions);
+            if (res && res.success) {
+              console.log('Migration to SQLite successful:', res);
+              localStorage.setItem('cypher_db_migrated', 'true');
+            }
+          } else {
+            localStorage.setItem('cypher_db_migrated', 'true');
+          }
+        }
+
+        // Fetch conversations list from SQLite
+        const convList = await ConversationService.listConversations();
+        if (!isMounted) return;
+        setSessions(convList);
+
+        // Restore active conversation
+        const savedActiveId = localStorage.getItem('cypher_active_session');
+        const targetId = savedActiveId && convList.some((c) => c.id === savedActiveId)
+          ? savedActiveId
+          : null;
+
+        if (targetId) {
+          setActiveSessionId(targetId);
+          const activeConv = await ConversationService.getConversation(targetId);
+          if (isMounted && activeConv) {
+            setMessages(activeConv.messages || []);
+          }
+        } else {
+          setActiveSessionId(null);
+          setMessages([]);
+        }
+      } catch (err) {
+        console.error('Error initializing chat database persistence:', err);
       }
-    } else {
-      setMessages([]);
     }
-  }, [activeSessionId]);
 
-  // Persist sessions
-  useEffect(() => {
-    localStorage.setItem('cypher_sessions', JSON.stringify(sessions));
-  }, [sessions]);
+    initStorage();
 
-  // Persist active session ID
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Persist active session ID in localStorage
   useEffect(() => {
     if (activeSessionId) {
       localStorage.setItem('cypher_active_session', activeSessionId);
@@ -119,7 +156,7 @@ export const App: React.FC = () => {
     }
   }, [activeSessionId]);
 
-  // Persist settings
+  // Persist settings in localStorage
   useEffect(() => {
     localStorage.setItem('cypher_settings', JSON.stringify(settings));
   }, [settings]);
@@ -177,40 +214,85 @@ export const App: React.FC = () => {
     if (messages.length === 0 && !activeSessionId) {
       return;
     }
-    // Clean up empty sessions
-    setSessions((prev) => prev.filter((s) => s.messages && s.messages.length > 0));
     setActiveSessionId(null);
+    localStorage.removeItem('cypher_active_session');
     setMessages([]);
   };
 
   // Select session
-  const handleSelectSession = (id: string) => {
+  const handleSelectSession = async (id: string) => {
     if (isStreaming) {
       handleStopStreaming();
     }
-    // Clean up empty sessions when switching
-    setSessions((prev) => prev.filter((s) => s.id === id || (s.messages && s.messages.length > 0)));
+    if (id === activeSessionId) return;
+
     setActiveSessionId(id);
+    localStorage.setItem('cypher_active_session', id);
+
+    try {
+      const conv = await ConversationService.getConversation(id);
+      if (conv) {
+        setMessages(conv.messages || []);
+      } else {
+        setMessages([]);
+      }
+    } catch (err) {
+      console.error('Failed to load conversation:', err);
+      setMessages([]);
+    }
   };
 
   // Delete session
-  const handleDeleteSession = (id: string, e: React.MouseEvent) => {
+  const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (isStreaming && activeSessionId === id) {
       handleStopStreaming();
     }
-    setSessions((prev) => {
-      const remaining = prev.filter((s) => s.id !== id);
-      if (activeSessionId === id) {
-        if (remaining.length > 0) {
-          setActiveSessionId(remaining[0].id);
-        } else {
-          setActiveSessionId(null);
+
+    try {
+      await ConversationService.deleteConversation(id);
+    } catch (err) {
+      console.error('Failed to delete conversation:', err);
+    }
+
+    const remaining = sessions.filter((s) => s.id !== id);
+    setSessions(remaining);
+
+    if (activeSessionId === id) {
+      if (remaining.length > 0) {
+        const nextId = remaining[0].id;
+        setActiveSessionId(nextId);
+        localStorage.setItem('cypher_active_session', nextId);
+        try {
+          const conv = await ConversationService.getConversation(nextId);
+          setMessages(conv ? conv.messages || [] : []);
+        } catch {
           setMessages([]);
         }
+      } else {
+        setActiveSessionId(null);
+        localStorage.removeItem('cypher_active_session');
+        setMessages([]);
       }
-      return remaining;
-    });
+    }
+  };
+
+  // Clear messages in current session
+  const handleClearChat = async () => {
+    if (isStreaming) {
+      handleStopStreaming();
+    }
+    if (activeSessionId) {
+      try {
+        await ConversationService.clearConversationMessages(activeSessionId);
+      } catch (err) {
+        console.error('Failed to clear messages in database:', err);
+      }
+      setSessions((prev) =>
+        prev.map((s) => (s.id === activeSessionId ? { ...s, title: 'New Conversation' } : s))
+      );
+    }
+    setMessages([]);
   };
 
   // Send message
@@ -250,34 +332,38 @@ export const App: React.FC = () => {
 
     setMessages(newMessages);
 
-    // Save or update session in sessions list (single source of truth)
     const sessionTitle = text.slice(0, 35);
+
     if (isNewSession) {
       const newSession: ChatSession = {
         id: targetSessionId!,
         title: sessionTitle,
-        messages: newMessages,
+        messages: [],
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
-      setSessions((prev) => [
-        newSession,
-        ...prev.filter((s) => s.id !== targetSessionId && s.messages && s.messages.length > 0),
-      ]);
+      setSessions((prev) => [newSession, ...prev.filter((s) => s.id !== targetSessionId)]);
       setActiveSessionId(targetSessionId);
+      localStorage.setItem('cypher_active_session', targetSessionId!);
+
+      // Create conversation in SQLite asynchronously
+      ConversationService.createConversation({
+        id: targetSessionId!,
+        title: sessionTitle,
+      }).catch((err) => console.error('Failed to create conversation in SQLite:', err));
     } else {
+      // Update session title if it was a default placeholder
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id === targetSessionId) {
             const firstUserMsg = newMessages.find((m) => m.role === 'user');
             const title =
-              (s.title === 'New Conversation' || !s.title || s.messages.length === 0) && firstUserMsg
+              (s.title === 'New Conversation' || !s.title) && firstUserMsg
                 ? firstUserMsg.content.slice(0, 35)
                 : s.title;
             return {
               ...s,
               title,
-              messages: newMessages,
               updatedAt: Date.now(),
             };
           }
@@ -285,6 +371,11 @@ export const App: React.FC = () => {
         })
       );
     }
+
+    // Persist user message to SQLite
+    ConversationService.saveMessage(targetSessionId!, userMessage).catch((err) =>
+      console.error('Failed to save user message to SQLite:', err)
+    );
 
     setIsStreaming(true);
 
@@ -323,11 +414,29 @@ export const App: React.FC = () => {
               return msg;
             });
 
-            // If done, persist final messages to sessions list
+            // If done, persist final assistant message to SQLite
             if (update.done) {
-              setSessions((all) =>
-                all.map((s) => (s.id === targetSessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s))
-              );
+              const finalAssistantMsg = updated.find((m) => m.id === assistantMessageId);
+              if (finalAssistantMsg) {
+                ConversationService.saveMessage(targetSessionId!, {
+                  id: finalAssistantMsg.id,
+                  role: 'assistant',
+                  content: finalAssistantMsg.content,
+                  thinking: finalAssistantMsg.thinking,
+                  searchQuery: finalAssistantMsg.searchQuery,
+                  sources: finalAssistantMsg.sources,
+                  metrics: finalAssistantMsg.metrics,
+                  timestamp: finalAssistantMsg.timestamp,
+                }).catch((err) => console.error('Failed to save assistant message to SQLite:', err));
+              }
+
+              // Update session updatedAt and move to top
+              setSessions((all) => {
+                const existing = all.find((s) => s.id === targetSessionId);
+                if (!existing) return all;
+                const updatedSession = { ...existing, updatedAt: Date.now() };
+                return [updatedSession, ...all.filter((s) => s.id !== targetSessionId)];
+              });
             }
 
             return updated;
@@ -337,6 +446,33 @@ export const App: React.FC = () => {
     } catch (err: any) {
       if (err.name === 'AbortError') {
         console.log('Stream generation aborted by user.');
+        setMessages((prev) => {
+          const updated = prev.map((msg) => {
+            if (msg.id === assistantMessageId) {
+              return {
+                ...msg,
+                isStreaming: false,
+                isThinkingActive: false,
+                searchStatus: undefined,
+              };
+            }
+            return msg;
+          });
+          const currentAsst = updated.find((m) => m.id === assistantMessageId);
+          if (currentAsst && (currentAsst.content || currentAsst.thinking)) {
+            ConversationService.saveMessage(targetSessionId!, {
+              id: currentAsst.id,
+              role: 'assistant',
+              content: currentAsst.content,
+              thinking: currentAsst.thinking,
+              searchQuery: currentAsst.searchQuery,
+              sources: currentAsst.sources,
+              metrics: currentAsst.metrics,
+              timestamp: currentAsst.timestamp,
+            }).catch((e) => console.error('Failed to save aborted message:', e));
+          }
+          return updated;
+        });
       } else {
         console.error('Error generating response:', err);
         setMessages((prev) => {
@@ -354,9 +490,6 @@ export const App: React.FC = () => {
             }
             return msg;
           });
-          setSessions((all) =>
-            all.map((s) => (s.id === targetSessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s))
-          );
           return updated;
         });
       }
@@ -371,18 +504,6 @@ export const App: React.FC = () => {
       abortControllerRef.current.abort();
       setIsStreaming(false);
     }
-  };
-
-  const handleClearChat = () => {
-    if (isStreaming) {
-      handleStopStreaming();
-    }
-    if (activeSessionId) {
-      setSessions((prev) =>
-        prev.map((s) => (s.id === activeSessionId ? { ...s, messages: [], title: 'New Conversation' } : s))
-      );
-    }
-    setMessages([]);
   };
 
   const handleUpdateSettings = (updates: Partial<AppSettings>) => {
