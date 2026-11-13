@@ -100,9 +100,6 @@ export const App: React.FC = () => {
       } else {
         setMessages([]);
       }
-    } else if (sessions.length > 0) {
-      setActiveSessionId(sessions[0].id);
-      setMessages(sessions[0].messages);
     } else {
       setMessages([]);
     }
@@ -126,46 +123,6 @@ export const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('cypher_settings', JSON.stringify(settings));
   }, [settings]);
-
-  // Update current session's messages in sessions list
-  const updateSessionMessages = useCallback((newMessages: Message[]) => {
-    setMessages(newMessages);
-
-    setSessions((prev) => {
-      if (!activeSessionId) {
-        // Create new session if none active
-        const newId = `session_${Date.now()}`;
-        setActiveSessionId(newId);
-        const title = newMessages[0]?.content.slice(0, 30) || 'New Conversation';
-        return [
-          {
-            id: newId,
-            title,
-            messages: newMessages,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          },
-          ...prev,
-        ];
-      }
-
-      return prev.map((sess) => {
-        if (sess.id === activeSessionId) {
-          const firstUserMsg = newMessages.find((m) => m.role === 'user');
-          const title = sess.title === 'New Conversation' && firstUserMsg
-            ? firstUserMsg.content.slice(0, 35)
-            : sess.title;
-          return {
-            ...sess,
-            title,
-            messages: newMessages,
-            updatedAt: Date.now(),
-          };
-        }
-        return sess;
-      });
-    });
-  }, [activeSessionId]);
 
   // Scroll to bottom smoothly
   const scrollToBottom = useCallback((smooth = true) => {
@@ -216,16 +173,13 @@ export const App: React.FC = () => {
     if (isStreaming) {
       handleStopStreaming();
     }
-    const newId = `session_${Date.now()}`;
-    const newSession: ChatSession = {
-      id: newId,
-      title: 'New Conversation',
-      messages: [],
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    setSessions((prev) => [newSession, ...prev]);
-    setActiveSessionId(newId);
+    // If already in a fresh empty conversation, no need to duplicate
+    if (messages.length === 0 && !activeSessionId) {
+      return;
+    }
+    // Clean up empty sessions
+    setSessions((prev) => prev.filter((s) => s.messages && s.messages.length > 0));
+    setActiveSessionId(null);
     setMessages([]);
   };
 
@@ -234,40 +188,41 @@ export const App: React.FC = () => {
     if (isStreaming) {
       handleStopStreaming();
     }
+    // Clean up empty sessions when switching
+    setSessions((prev) => prev.filter((s) => s.id === id || (s.messages && s.messages.length > 0)));
     setActiveSessionId(id);
   };
 
   // Delete session
   const handleDeleteSession = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-    if (activeSessionId === id) {
-      const remaining = sessions.filter((s) => s.id !== id);
-      if (remaining.length > 0) {
-        setActiveSessionId(remaining[0].id);
-      } else {
-        setActiveSessionId(null);
-        setMessages([]);
-      }
+    if (isStreaming && activeSessionId === id) {
+      handleStopStreaming();
     }
+    setSessions((prev) => {
+      const remaining = prev.filter((s) => s.id !== id);
+      if (activeSessionId === id) {
+        if (remaining.length > 0) {
+          setActiveSessionId(remaining[0].id);
+        } else {
+          setActiveSessionId(null);
+          setMessages([]);
+        }
+      }
+      return remaining;
+    });
   };
 
   // Send message
   const handleSendMessage = async (text: string) => {
     if (!text.trim() || isStreaming) return;
 
-    let currentSessionId = activeSessionId;
-    if (!currentSessionId) {
-      currentSessionId = `session_${Date.now()}`;
-      const newSession: ChatSession = {
-        id: currentSessionId,
-        title: text.slice(0, 35),
-        messages: [],
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      setSessions((prev) => [newSession, ...prev]);
-      setActiveSessionId(currentSessionId);
+    // Determine target session ID
+    let targetSessionId = activeSessionId;
+    const isNewSession = !targetSessionId || !sessions.some((s) => s.id === targetSessionId);
+
+    if (isNewSession) {
+      targetSessionId = `session_${Date.now()}`;
     }
 
     const userMessage: Message = {
@@ -289,8 +244,48 @@ export const App: React.FC = () => {
       timestamp: Date.now(),
     };
 
-    const newMessages = [...messages, userMessage, initialAssistantMessage];
-    updateSessionMessages(newMessages);
+    const newMessages = isNewSession
+      ? [userMessage, initialAssistantMessage]
+      : [...messages, userMessage, initialAssistantMessage];
+
+    setMessages(newMessages);
+
+    // Save or update session in sessions list (single source of truth)
+    const sessionTitle = text.slice(0, 35);
+    if (isNewSession) {
+      const newSession: ChatSession = {
+        id: targetSessionId!,
+        title: sessionTitle,
+        messages: newMessages,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      setSessions((prev) => [
+        newSession,
+        ...prev.filter((s) => s.id !== targetSessionId && s.messages && s.messages.length > 0),
+      ]);
+      setActiveSessionId(targetSessionId);
+    } else {
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id === targetSessionId) {
+            const firstUserMsg = newMessages.find((m) => m.role === 'user');
+            const title =
+              (s.title === 'New Conversation' || !s.title || s.messages.length === 0) && firstUserMsg
+                ? firstUserMsg.content.slice(0, 35)
+                : s.title;
+            return {
+              ...s,
+              title,
+              messages: newMessages,
+              updatedAt: Date.now(),
+            };
+          }
+          return s;
+        })
+      );
+    }
+
     setIsStreaming(true);
 
     const abortController = new AbortController();
@@ -328,10 +323,10 @@ export const App: React.FC = () => {
               return msg;
             });
 
-            // If done, persist to sessions list
+            // If done, persist final messages to sessions list
             if (update.done) {
               setSessions((all) =>
-                all.map((s) => (s.id === currentSessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s))
+                all.map((s) => (s.id === targetSessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s))
               );
             }
 
@@ -360,7 +355,7 @@ export const App: React.FC = () => {
             return msg;
           });
           setSessions((all) =>
-            all.map((s) => (s.id === currentSessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s))
+            all.map((s) => (s.id === targetSessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s))
           );
           return updated;
         });
@@ -383,7 +378,9 @@ export const App: React.FC = () => {
       handleStopStreaming();
     }
     if (activeSessionId) {
-      setSessions((prev) => prev.map((s) => (s.id === activeSessionId ? { ...s, messages: [] } : s)));
+      setSessions((prev) =>
+        prev.map((s) => (s.id === activeSessionId ? { ...s, messages: [], title: 'New Conversation' } : s))
+      );
     }
     setMessages([]);
   };
